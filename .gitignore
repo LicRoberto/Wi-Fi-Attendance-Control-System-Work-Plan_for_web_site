@@ -1,0 +1,15 @@
+# Entornos virtuales de Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Dependencias y builds de Node/TypeScript
+node_modules/
+.next/
+out/
+build/
+
+# Bases de datos y variables de entorno
+*.sqlite3
+.env
+.env.local
