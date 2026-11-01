@@ -1,6 +1,9 @@
+import subprocess
+import platform
+
 class NetworkConfigManager:
     def __init__(self):
-        # Única Red Institucional: SSID: "TUP" | Password: "tecplayacar2019"
+        # Única Red Institucional Oficial TUP: SSID "TUP" | Password "tecplayacar2019"
         self._redes_bin = {
             "010101000101010101010000": {
                 "password_bin": "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001",
@@ -40,7 +43,29 @@ class NetworkConfigManager:
         }
         return {"status": "success", "mensaje": f"Red '{ssid}' codificada y guardada correctamente."}
 
+    def obtener_ssid_real_sistema(self) -> str | None:
+        """Obtiene el SSID real de la tarjeta Wi-Fi en Windows o macOS"""
+        try:
+            sistema = platform.system()
+            if sistema == "Windows":
+                comando = "netsh wlan show interfaces"
+                resultado = subprocess.check_output(comando, shell=True).decode("utf-8", errors="ignore")
+                for linea in resultado.split("\n"):
+                    if "SSID" in linea and "BSSID" not in linea:
+                        return linea.split(":")[1].strip()
+            elif sistema == "Darwin":  # macOS
+                comando = "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport -I"
+                resultado = subprocess.check_output(comando, shell=True).decode("utf-8", errors="ignore")
+                for linea in resultado.split("\n"):
+                    if " SSID:" in linea:
+                        return linea.split(":")[1].strip()
+        except Exception as e:
+            print("Error consultando la red Wi-Fi del sistema:", e)
+        return None
+
     def es_red_valida(self, ssid: str) -> bool:
+        if not ssid:
+            return False
         ssid_bin = self._to_binary(ssid)
         return ssid_bin in self._redes_bin and self._redes_bin[ssid_bin]["activa"]
 

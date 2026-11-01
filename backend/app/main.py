@@ -35,6 +35,7 @@ class RedWifiCreate(BaseModel):
 class LoginEmpleadoRequest(BaseModel):
     numero_empleado: str
     password: str
+    device_fingerprint: Optional[str] = None
 
 class PermisosConsentimientoRequest(BaseModel):
     email: str
@@ -43,6 +44,7 @@ class PermisosConsentimientoRequest(BaseModel):
 class AutoMarcacionRequest(BaseModel):
     email: str
     ssid_actual: Optional[str] = None
+    device_fingerprint: Optional[str] = None
 
 @app.get("/")
 def home():
@@ -52,7 +54,7 @@ def home():
 def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     if datos.numero_empleado.upper() == "DOC-2026-01" and datos.password == "tup2026":
         email_docente = "docente.prueba@tecplayacar.edu.mx"
-        mac_real = "78:46:5C:C8:2D:D3"
+        fingerprint = datos.device_fingerprint or "TUP-DEV-DEFAULT"
 
         usuario = db.query(models.Usuario).filter(models.Usuario.email == email_docente).first()
 
@@ -62,18 +64,18 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
                 nombre="Prof. Docente de Prueba",
                 numero_empleado="DOC-2026-01",
                 rol="docente",
-                mac_address=mac_real
+                mac_address=fingerprint
             )
             db.add(usuario)
             db.commit()
             db.refresh(usuario)
-        elif usuario.mac_address != mac_real:
-            usuario.mac_address = mac_real
+        else:
+            usuario.mac_address = fingerprint
             db.commit()
 
         response.set_cookie(
             key="tup_device_token",
-            value=f"TOKEN-MAC-{mac_real.replace(':', '')}",
+            value=fingerprint,
             httponly=False,
             samesite="lax"
         )
@@ -92,30 +94,35 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
     raise HTTPException(status_code=401, detail="Número de empleado o contraseña incorrectos")
 
 @app.get("/api/usuarios/me")
-def obtener_perfil(email: str, db: Session = Depends(get_db)):
+def obtener_perfil(email: str, device_id: Optional[str] = None, db: Session = Depends(get_db)):
     admin_email = _get_admin_email()
     usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
 
     es_admin = (email.lower() == admin_email.lower())
     rol_asignado = "admin" if es_admin else "docente"
 
+    identificador_disp = device_id or (usuario.mac_address if usuario else None) or "TUP-DEV-PENDIENTE"
+
     if not usuario:
         usuario = models.Usuario(
             email=email,
             nombre="Usuario TUP",
             rol=rol_asignado,
-            mac_address="78:46:5C:C8:2D:D3"
+            mac_address=identificador_disp
         )
         db.add(usuario)
         db.commit()
         db.refresh(usuario)
+    elif device_id and usuario.mac_address != device_id:
+        usuario.mac_address = device_id
+        db.commit()
 
     return {
         "id": usuario.id,
         "nombre": usuario.nombre,
         "email": usuario.email,
         "rol": usuario.rol,
-        "mac_address": usuario.mac_address or "78:46:5C:C8:2D:D3"
+        "mac_address": usuario.mac_address
     }
 
 @app.post("/api/usuarios/consentimiento")
@@ -128,22 +135,22 @@ def actualizar_consentimiento(datos: PermisosConsentimientoRequest, db: Session 
 
 @app.post("/api/asistencias/auto-marcar")
 def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Session = Depends(get_db)):
-    # Validar que la red corresponda a la SSID "TUP" registrada en network_config.py
-    ssid_evaluado = datos.ssid_actual or "TUP"
-    es_valida = network_manager.es_red_valida(ssid_evaluado)
+    ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
+    es_valida = network_manager.es_red_valida(ssid_detectado)
 
     if not es_valida:
         return {
             "status": "red_invalida",
-            "mensaje": f"Fuera de la red Wi-Fi TUP (SSID: {ssid_evaluado}).",
-            "red_activa": False
+            "mensaje": f"Fuera de la red Wi-Fi TUP (Red detectada: {ssid_detectado or 'Desconectado'}).",
+            "red_activa": False,
+            "ssid_actual": ssid_detectado
         }
 
     usuario = db.query(models.Usuario).filter(models.Usuario.email == datos.email).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    mac_hardware = usuario.mac_address or "78:46:5C:C8:2D:D3"
+    dispositivo_id = datos.device_fingerprint or usuario.mac_address or "TUP-DEV-UNKNOWN"
     ahora = datetime.now()
     hoy_str = ahora.strftime("%Y-%m-%d")
 
@@ -157,15 +164,14 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
         nueva_asistencia = models.Asistencia(
             usuario_id=usuario.id,
             fecha_hora=ahora,
-            ip_origen=mac_hardware,
-            metodo="DETECCION_MAC_AUTOMATICA",
+            ip_origen=dispositivo_id,
+            metodo="FINGERPRINT_WEB_AUTOMATICO",
             estado="PRESENTE"
         )
         db.add(nueva_asistencia)
         db.commit()
         db.refresh(nueva_asistencia)
 
-        # ARCHIVADO AUTOMÁTICO: Límite estricto de máximo 10 registros
         todos = db.query(models.Asistencia).filter(
             models.Asistencia.usuario_id == usuario.id
         ).order_by(models.Asistencia.fecha_hora.desc()).all()
@@ -179,10 +185,16 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             "status": "success",
             "mensaje": f"Asistencia registrada automáticamente en red TUP para {usuario.nombre}",
             "fecha_hora": nueva_asistencia.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
-            "red_activa": True
+            "red_activa": True,
+            "ssid_actual": ssid_detectado
         }
 
-    return {"status": "already_registered", "mensaje": "Asistencia ya registrada hoy en red TUP.", "red_activa": True}
+    return {
+        "status": "already_registered",
+        "mensaje": "Asistencia ya registrada hoy en red TUP.",
+        "red_activa": True,
+        "ssid_actual": ssid_detectado
+    }
 
 @app.get("/api/asistencias/historial")
 def obtener_historial(email: str, db: Session = Depends(get_db)):
