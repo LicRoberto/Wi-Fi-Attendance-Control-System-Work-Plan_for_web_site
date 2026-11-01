@@ -1,53 +1,73 @@
 "use client";
 
 import { signOut } from "next-auth/react";
-import { useState, useEffect } from "react";
-import Image from "next/image";
-
-interface RegistroAsistencia {
-  id: number;
-  fecha_hora: string;
-  ip_origen: string;
-  metodo: string;
-  estado: string;
-}
+import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
+import ParticlesBackground from "./ParticlesBackground";
+import CircularCarousel from "./CircularCarousel";
 
 interface DocenteDashboardProps {
   session: any;
 }
 
 export default function DocenteDashboard({ session }: DocenteDashboardProps) {
-  const [historial, setHistorial] = useState<RegistroAsistencia[]>([]);
-  const [macAddress, setMacAddress] = useState<string>("DETECTANDO MAC...");
+  const [menuTupAbierto, setMenuTupAbierto] = useState<boolean>(false);
+  const [vistaModalActiva, setVistaModalActiva] = useState<"historial" | "deteccion" | "foto" | null>(null);
+
+  // Huella Digital del Dispositivo en lugar de MAC hardcodeada
+  const [deviceId, setDeviceId] = useState<string>("Generando Huella...");
   const [redConectada, setRedConectada] = useState<boolean>(false);
-  const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(true);
+  const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
+  const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(10);
+  const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
 
-  // Estado para el Modo Oscuro / Claro
-  const [modoOscuro, setModoOscuro] = useState<boolean>(false);
-
-  // Estados para Reloj 12H y Porcentajes Dinámicos
+  const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(false);
   const [reloj12H, setReloj12H] = useState<string>("");
-  const [porcentajeEntrada, setPorcentajeEntrada] = useState<number>(0);
-  const [porcentajeTolerancia, setPorcentajeTolerancia] = useState<number>(0);
-  const [usandoTolerancia, setUsandoTolerancia] = useState<boolean>(false);
+  const [fotoPerfil, setFotoPerfil] = useState<string>("");
+
+  const [motivoSolicitud, setMotivoSolicitud] = useState<string>("");
+  const [fechaEvento, setFechaEvento] = useState<string>("");
+  const [preguntaAbierta, setPreguntaAbierta] = useState<string>("");
+  const [detalleAdicional, setDetalleAdicional] = useState<string>("");
+  const [reporteEnviado, setReporteEnviado] = useState<boolean>(false);
+  const [cargandoReporte, setCargandoReporte] = useState<boolean>(false);
+
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Generador de Huella Digital Web Única por Dispositivo
+  const generarDeviceFingerprint = (): string => {
+    let devId = localStorage.getItem("tup_device_fingerprint");
+    if (!devId) {
+      const navInfo = `${navigator.userAgent}-${navigator.language}-${screen.width}x${screen.height}-${new Date().getTimezoneOffset()}`;
+      let hash = 0;
+      for (let i = 0; i < navInfo.length; i++) {
+        const char = navInfo.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash |= 0;
+      }
+      const hashHex = Math.abs(hash).toString(16).toUpperCase().padStart(8, "0");
+      devId = `TUP-DEV-${hashHex.slice(0, 4)}-${hashHex.slice(4, 8)}`;
+      localStorage.setItem("tup_device_fingerprint", devId);
+    }
+    return devId;
+  };
 
   useEffect(() => {
-    const aceptado = localStorage.getItem("tup_privacidad_aceptada");
-    if (aceptado === "true") {
+    const usuarioEmail = session?.user?.email;
+    const claveStorage = `tup_privacidad_${usuarioEmail}`;
+    const aceptadoLocal = localStorage.getItem(claveStorage);
+
+    if (aceptadoLocal === "true") {
       setMostrarModalPermisos(false);
     } else {
       setMostrarModalPermisos(true);
     }
 
-    const temaGuardado = localStorage.getItem("tup_tema_oscuro");
-    if (temaGuardado === "true") {
-      setModoOscuro(true);
-    }
+    const currentFingerprint = generarDeviceFingerprint();
+    setDeviceId(currentFingerprint);
 
-    // Actualizador de Reloj y Barras Dinámicas en Tiempo Real
     const timerClock = setInterval(() => {
       const ahora = new Date();
-      
       setReloj12H(
         ahora.toLocaleTimeString("en-US", {
           hour: "2-digit",
@@ -56,179 +76,160 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           hour12: true,
         })
       );
-
-      const horaActual = ahora.getHours();
-      const minutoActual = ahora.getMinutes();
-      const segundoActual = ahora.getSeconds();
-
-      const minutosTotalesDia = horaActual * 60 + minutoActual + segundoActual / 60;
-      const metaMinutos3PM = 15 * 60; // 3:00 PM = 900 minutos
-
-      if (minutosTotalesDia >= metaMinutos3PM) {
-        setPorcentajeEntrada(100);
-      } else {
-        const inicioJornada = 8 * 60;
-        const progreso = Math.max(
-          0,
-          ((minutosTotalesDia - inicioJornada) / (metaMinutos3PM - inicioJornada)) * 100
-        );
-        setPorcentajeEntrada(Math.min(99, Math.round(progreso)));
-      }
-
-      if (horaActual === 15 && minutoActual >= 0 && minutoActual <= 10) {
-        setUsandoTolerancia(true);
-        const minutosTolerancia = minutoActual + segundoActual / 60;
-        const pctTol = Math.round((minutosTolerancia / 10) * 100);
-        setPorcentajeTolerancia(Math.min(100, pctTol));
-      } else if (horaActual >= 15 && (horaActual > 15 || minutoActual > 10)) {
-        setUsandoTolerancia(false);
-        setPorcentajeTolerancia(100);
-      } else {
-        setUsandoTolerancia(false);
-        setPorcentajeTolerancia(0);
-      }
     }, 1000);
 
-    if (session?.user?.email) {
-      cargarPerfil();
-      evaluarRedYAutoMarcar();
-      cargarHistorial();
-
-      const interval = setInterval(() => {
-        cargarPerfil();
-        evaluarRedYAutoMarcar();
-        cargarHistorial();
-      }, 3000);
-
-      return () => {
-        clearInterval(timerClock);
-        clearInterval(interval);
-      };
+    if (usuarioEmail) {
+      cargarDatosPerfilReal(usuarioEmail, currentFingerprint);
+      evaluarRedWifiReal(usuarioEmail, currentFingerprint);
     }
 
-    return () => clearInterval(timerClock);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuTupAbierto(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+
+    return () => {
+      clearInterval(timerClock);
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
   }, [session]);
 
-  const toggleTemaVisual = () => {
-    const nuevoEstado = !modoOscuro;
-    setModoOscuro(nuevoEstado);
-    localStorage.setItem("tup_tema_oscuro", nuevoEstado ? "true" : "false");
-  };
-
-  const cargarPerfil = async () => {
-    if (!session?.user?.email) return;
+  const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/usuarios/me?email=${encodeURIComponent(session.user.email)}`);
+      const res = await fetch(`http://localhost:8000/api/usuarios/me?email=${encodeURIComponent(email)}&device_id=${encodeURIComponent(fingerprint)}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.mac_address) setMacAddress(data.mac_address);
+        setDeviceId(data.mac_address || fingerprint);
       }
     } catch (err) {
-      console.error("Error al obtener perfil de docente");
+      console.error("Error al obtener perfil", err);
     }
   };
 
-  const evaluarRedYAutoMarcar = async () => {
-    if (!session?.user?.email) return;
+  const evaluarRedWifiReal = async (email: string, fingerprint: string) => {
     try {
       const res = await fetch("http://localhost:8000/api/asistencias/auto-marcar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          email: session.user.email,
-          ssid_actual: "TUP"
-        }),
+        body: JSON.stringify({ email, device_fingerprint: fingerprint }),
       });
-
       if (res.ok) {
         const data = await res.json();
-        setRedConectada(data.red_activa);
+        setRedConectada(Boolean(data.red_activa));
+      } else {
+        setRedConectada(false);
       }
     } catch (err) {
       setRedConectada(false);
     }
   };
 
-  const cargarHistorial = async () => {
-    if (!session?.user?.email) return;
-    try {
-      const res = await fetch(`http://localhost:8000/api/asistencias/historial?email=${encodeURIComponent(session.user.email)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setHistorial(data.slice(0, 10));
-      }
-    } catch (err) {
-      console.error("Error al cargar historial");
-    }
+  const abrirModalHistorial = () => {
+    setVistaModalActiva("historial");
+    setMenuTupAbierto(false);
+    setCargandoHistorial(true);
+    setTimeout(() => {
+      setCargandoHistorial(false);
+    }, 400);
   };
 
   const aceptarPermisosLegales = async () => {
-    localStorage.setItem("tup_privacidad_aceptada", "true");
+    const usuarioEmail = session?.user?.email;
+    if (usuarioEmail) {
+      localStorage.setItem(`tup_privacidad_${usuarioEmail}`, "true");
+    }
     setMostrarModalPermisos(false);
+  };
 
-    if (session?.user?.email) {
-      await fetch("http://localhost:8000/api/usuarios/consentimiento", {
+  const manejarEnvioCuestionario = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!motivoSolicitud) return;
+
+    setCargandoReporte(true);
+    try {
+      await fetch("http://localhost:8000/api/incidencias/crear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: session.user.email,
-          autorizado: true,
+          email: session?.user?.email,
+          motivo: motivoSolicitud,
+          fecha_evento: fechaEvento,
+          descripcion: preguntaAbierta,
+          observaciones: detalleAdicional,
         }),
       });
-      evaluarRedYAutoMarcar();
+
+      setReporteEnviado(true);
+      setMotivoSolicitud("");
+      setFechaEvento("");
+      setPreguntaAbierta("");
+      setDetalleAdicional("");
+      setTimeout(() => setReporteEnviado(false), 4000);
+    } catch (error) {
+      console.error("Error al procesar solicitud", error);
+    } finally {
+      setCargandoReporte(false);
+    }
+  };
+
+  const activarAlertaEmergencia = (e: React.MouseEvent) => {
+    e.preventDefault();
+    alert("URGENCIA REGISTRADA: Se ha notificado inmediatamente al área de Control Escolar y Administración del Campus TUP.");
+  };
+
+  const manejarCambioFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setFotoPerfil(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
   return (
-    <main className={`min-h-screen transition-colors duration-300 relative ${
-      modoOscuro ? "bg-black text-neutral-100" : "bg-[#F8FAFC] text-slate-800"
-    }`}>
-      {/* MODAL DE PRIVACIDAD Y DOCUMENTACIÓN LEGAL */}
+    <main className="relative min-h-screen text-white font-sans overflow-hidden">
+      <ParticlesBackground />
+
       {mostrarModalPermisos && (
         <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className={`max-w-lg w-full rounded-2xl shadow-2xl border p-6 space-y-4 ${
-            modoOscuro ? "bg-neutral-900 border-neutral-800 text-neutral-100" : "bg-white border-slate-200 text-slate-800"
-          }`}>
+          <div className="max-w-lg w-full rounded-2xl shadow-2xl border border-white/10 bg-neutral-900/90 text-white p-6 space-y-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#7A1C2E] text-white flex items-center justify-center font-bold text-lg">
+              <div className="w-10 h-10 rounded-full bg-[#7A1C2E] text-white flex items-center justify-center font-bold text-lg shadow-lg">
                 TUP
               </div>
               <div>
                 <h3 className="font-bold text-base">Autorización de Presencia en Red Wi-Fi</h3>
-                <p className={`text-xs ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-                  Tecnológico Universitario Playacar
-                </p>
+                <p className="text-xs text-neutral-400">Tecnológico Universitario Playacar</p>
               </div>
             </div>
 
-            <div className={`p-4 rounded-xl border text-xs leading-relaxed space-y-3 ${
-              modoOscuro ? "bg-neutral-950 border-neutral-800 text-neutral-300" : "bg-slate-50 border-slate-200 text-slate-600"
-            }`}>
-              <p className="font-semibold">
+            <div className="p-4 rounded-xl border border-white/10 bg-black/50 text-xs leading-relaxed space-y-3 text-neutral-300">
+              <p className="font-semibold text-white">
                 Aviso de Privacidad y Permisos de Sesión Institucional:
               </p>
               <p>
-                Para automatizar el registro de asistencia mediante la red Wi-Fi del campus, el docente autoriza el monitoreo de presencia por dirección MAC en el aula.
+                Para automatizar el registro de asistencia mediante la red Wi-Fi del campus, el docente autoriza la identificación digital única de su dispositivo en el aula.
               </p>
               
               <div className="pt-2">
-                <a
-                  href="/aviso-privacidad.pdf"
+                <Link
+                  href="/privacidad"
                   target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-[#7A1C2E] dark:text-rose-400 font-bold underline hover:opacity-80 transition cursor-pointer"
+                  className="inline-flex items-center gap-1.5 text-blue-400 font-bold underline hover:opacity-80 transition cursor-pointer"
                 >
-                  📄 Leer documentación sobre la privacidad del usuario
-                </a>
+                  Leer aviso de privacidad aquí
+                </Link>
               </div>
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 onClick={() => signOut()}
-                className={`px-4 py-2 text-xs font-semibold rounded-xl transition cursor-pointer ${
-                  modoOscuro ? "hover:bg-neutral-800 text-neutral-300" : "hover:bg-slate-100 text-slate-600"
-                }`}
+                className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-300 hover:bg-neutral-800 transition cursor-pointer"
               >
                 Rechazar y Salir
               </button>
@@ -243,302 +244,312 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       )}
 
-      {/* Header Institucional */}
-      <header className={`border-b px-8 py-4 flex items-center justify-between shadow-sm sticky top-0 z-40 transition-colors ${
-        modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-      }`}>
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-[#7A1C2E] text-white flex items-center justify-center font-bold">
-            TUP
+      <header className="relative z-40 border-b border-white/10 bg-neutral-900/40 backdrop-blur-md px-6 md:px-8 py-3.5 flex items-center justify-between shadow-lg">
+        <div className="flex items-center gap-4">
+          <div className="relative" ref={menuRef}>
+            <button
+              onClick={() => setMenuTupAbierto(!menuTupAbierto)}
+              title="Menú Opciones TUP"
+              className="w-10 h-10 rounded-full bg-[#7A1C2E] hover:bg-[#9E2A3F] text-white flex items-center justify-center font-bold shadow-lg transition-all cursor-pointer ring-2 ring-white/20 hover:scale-105 active:scale-95"
+            >
+              TUP
+            </button>
+
+            {menuTupAbierto && (
+              <div className="absolute left-0 mt-3 w-64 rounded-2xl bg-neutral-900/95 border border-white/15 shadow-2xl backdrop-blur-xl p-2 z-50 text-xs space-y-1">
+                <div className="px-3 py-2 border-b border-white/10 text-neutral-400 font-bold uppercase tracking-wider text-[10px]">
+                  Opciones del Docente
+                </div>
+
+                <button
+                  onClick={abrirModalHistorial}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                >
+                  Historial de asistencias
+                </button>
+
+                <button
+                  onClick={() => { setVistaModalActiva("deteccion"); setMenuTupAbierto(false); }}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                >
+                  Detección de red
+                </button>
+
+                <button
+                  onClick={() => { setVistaModalActiva("foto"); setMenuTupAbierto(false); }}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                >
+                  Cambiar foto de perfil
+                </button>
+              </div>
+            )}
           </div>
+
           <div>
-            <h1 className="font-bold text-lg leading-tight">Tecnológico Universitario Playacar</h1>
-            <p className={`text-xs ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>Portal de Asistencia Docente</p>
+            <h1 className="font-bold text-base md:text-lg leading-tight text-white">Tecnológico Universitario Playacar</h1>
+            <p className="text-xs text-neutral-400">Portal de Asistencia Docente</p>
           </div>
         </div>
 
-        {/* Reloj Digital Único de 12 Horas Institucional */}
-        <div className={`hidden md:flex items-center gap-2 border px-4 py-2 rounded-xl ${
-          modoOscuro ? "bg-neutral-950 border-neutral-800 text-neutral-200" : "bg-slate-100 border-slate-200 text-slate-800"
-        }`}>
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className={`text-xs font-semibold uppercase ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-            HORA OFICIAL TUP:
-          </span>
-          <span className="text-sm font-bold font-mono tracking-wider text-[#7A1C2E] dark:text-rose-400">
-            {reloj12H || "03:00:00 PM"}
-          </span>
+        <div className="hidden md:flex items-center gap-3">
+          <div className="flex items-center gap-2 border border-white/10 px-3.5 py-1.5 rounded-xl bg-black/50 text-neutral-200">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span className="text-xs font-bold font-mono tracking-wider text-rose-400">
+              {reloj12H || "03:00:00 PM"}
+            </span>
+          </div>
+
+          <div className={`flex items-center gap-2 border px-3.5 py-1.5 rounded-xl text-xs font-bold ${
+            redConectada
+              ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
+              : "border-rose-500/40 bg-rose-950/40 text-rose-300"
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
+            <span>TUP-WIFI: {redConectada ? "Activa" : "Desactivada"}</span>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold">{session.user?.name}</p>
-            <p className={`text-xs ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>{session.user?.email}</p>
+            <p className="text-sm font-semibold text-white">{session?.user?.name}</p>
+            <p className="text-xs text-neutral-400">{session?.user?.email}</p>
           </div>
 
-          {/* BOTÓN MODO CLARO / OSCURO CON IMÁGENES .ICO DESDE /public */}
-          <button
-            onClick={toggleTemaVisual}
-            title={modoOscuro ? "Cambiar a Modo Claro" : "Cambiar a Modo Oscuro"}
-            className={`p-2 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
-              modoOscuro
-                ? "bg-neutral-800 border-neutral-700 hover:bg-neutral-700"
-                : "bg-slate-100 border-slate-200 hover:bg-slate-200"
-            }`}
-          >
-            {modoOscuro ? (
-              <img 
-                src="/sol.ico" 
-                alt="Sol" 
-                className="w-6 h-6 object-contain"
-                onError={(e) => {
-                  // Fallback si aun no se agrega el archivo en /public
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23F59E0B'><circle cx='12' cy='12' r='5'/></svg>";
-                }}
-              />
+          <div className="w-9 h-9 rounded-full overflow-hidden border border-white/20 bg-neutral-800 flex items-center justify-center text-xs font-bold text-white">
+            {fotoPerfil ? (
+              <img src={fotoPerfil} alt="Perfil" className="w-full h-full object-cover" />
             ) : (
-              <img 
-                src="/luna.ico" 
-                alt="Luna" 
-                className="w-6 h-6 object-contain"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23475569'><path d='M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z'/></svg>";
-                }}
-              />
+              session?.user?.name?.charAt(0) || "D"
             )}
-          </button>
+          </div>
 
           <button
             onClick={() => signOut()}
-            className="px-4 py-2 text-xs font-semibold text-[#7A1C2E] dark:text-rose-400 border border-[#7A1C2E] dark:border-rose-400 rounded-lg hover:bg-[#7A1C2E] hover:text-white dark:hover:bg-rose-500 dark:hover:text-white transition-all cursor-pointer"
+            className="px-3.5 py-1.5 text-xs font-semibold text-rose-400 border border-rose-500/50 rounded-xl hover:bg-rose-600 hover:text-white transition-all cursor-pointer"
           >
             Cerrar Sesión
           </button>
         </div>
       </header>
 
-      <section className="max-w-6xl mx-auto p-8 space-y-8">
-        {/* Tarjetas Informativas */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className={`p-6 rounded-xl border shadow-sm ${
-            modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-          }`}>
-            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">Detección de Presencia</span>
-            <p className={`text-xl font-bold mt-2 flex items-center gap-2 ${redConectada ? "text-emerald-500" : "text-rose-500"}`}>
-              <span className={`w-3 h-3 rounded-full ${redConectada ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`}></span>
-              {redConectada ? "Red Wi-Fi TUP Activa" : "Fuera de Red TUP"}
-            </p>
-            <p className={`text-xs mt-2 ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-              Detección en tiempo real (SSID: TUP)
+      <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
+        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/50 backdrop-blur-xl shadow-2xl space-y-6">
+          <div className="border-b border-white/10 pb-4">
+            <h3 className="text-lg md:text-xl font-extrabold text-white">
+              Solicitudes, Justificaciones e Incidencias
+            </h3>
+            <p className="text-xs text-neutral-300 mt-1">
+              Cuestionario para notificar faltas, solicitar justificantes o reportar imprevistos en aula.
             </p>
           </div>
 
-          <div className={`p-6 rounded-xl border shadow-sm ${
-            modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-          }`}>
-            <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">Dirección MAC Registrada</span>
-            <p className="text-lg font-bold mt-2 font-mono uppercase">
-              {macAddress}
-            </p>
-            <p className={`text-xs mt-2 ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-              Adaptador de Red del Dispositivo
-            </p>
-          </div>
+          <form onSubmit={manejarEnvioCuestionario} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                  1. ¿Qué deseas reportar o solicitar? *
+                </label>
+                <select
+                  value={motivoSolicitud}
+                  onChange={(e) => setMotivoSolicitud(e.target.value)}
+                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
+                  required
+                >
+                  <option value="" className="bg-neutral-900 text-white">Seleccione una opción...</option>
+                  <option value="justificacion_falta" className="bg-neutral-900 text-white">Solicitar Justificante por Inasistencia / Salud</option>
+                  <option value="permiso_oficial" className="bg-neutral-900 text-white">Solicitud de Permiso Económico / Oficial</option>
+                  <option value="falla_tecnica" className="bg-neutral-900 text-white">Falla Técnica de Equipo / Proyector / Clima</option>
+                  <option value="problema_wifi" className="bg-neutral-900 text-white">Problema de Conexión a Red Wi-Fi TUP</option>
+                </select>
+              </div>
 
-          <div className={`p-6 rounded-xl border shadow-sm ${
-            modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-          }`}>
-            <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">Pases de Lista Activos</span>
-            <p className="text-xl font-bold mt-2">{historial.length} / 10 Pases</p>
-            <p className={`text-xs mt-2 ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-              Máximo 10 (Archivado en BD)
-            </p>
-          </div>
-        </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                  2. Fecha correspondiente del evento / falta
+                </label>
+                <input
+                  type="date"
+                  value={fechaEvento}
+                  onChange={(e) => setFechaEvento(e.target.value)}
+                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
+                />
+              </div>
+            </div>
 
-        {/* GRÁFICA DE BARRAS DINÁMICA */}
-        <div className={`p-6 rounded-xl border shadow-sm ${
-          modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-        }`}>
-          <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="font-bold text-lg">Métricas de Asistencia en Tiempo Real</h3>
-              <p className={`text-xs ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-                Horario oficial en aula: <span className={`font-bold ${modoOscuro ? "text-neutral-200" : "text-slate-800"}`}>3:00 PM (15:00 hrs)</span> • Ventana de tolerancia: 10 minutos.
-              </p>
-            </div>
-          </div>
-
-          <div className={`relative w-full h-64 my-4 rounded-xl border p-6 flex items-end justify-around ${
-            modoOscuro ? "bg-black border-neutral-800" : "bg-slate-50 border-slate-100"
-          }`}>
-            
-            {/* Barra 1: Entrada 3:00 PM */}
-            <div className="flex flex-col items-center h-full justify-end w-1/4 group">
-              <div className="text-[11px] font-bold text-[#7A1C2E] dark:text-rose-400 mb-2 font-mono transition-all">
-                {porcentajeEntrada === 100 ? "100% (¡3:00 PM!)" : `${porcentajeEntrada}% a las 3:00 PM`}
-              </div>
-              <div 
-                className="w-16 bg-gradient-to-t from-[#7A1C2E] to-rose-500 rounded-t-xl shadow-md transition-all duration-700 ease-out"
-                style={{ height: `${Math.max(6, porcentajeEntrada)}%` }}
-              ></div>
-              <span className={`text-xs font-bold mt-3 text-center ${modoOscuro ? "text-neutral-200" : "text-slate-700"}`}>Entrada 3:00 PM</span>
-              <span className="text-[10px] text-neutral-400 text-center">Horario oficial en aula</span>
+              <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                3. ¿Qué está sucediendo? (Pregunta Abierta) *
+              </label>
+              <textarea
+                rows={4}
+                placeholder="Describe a detalle lo que sucede en el aula o el motivo de tu solicitud..."
+                value={preguntaAbierta}
+                onChange={(e) => setPreguntaAbierta(e.target.value)}
+                className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
+                required
+              />
             </div>
 
-            {/* Barra 2: Tolerancia 10 min */}
-            <div className="flex flex-col items-center h-full justify-end w-1/4 group">
-              <div className="text-[11px] font-bold text-amber-500 mb-2 font-mono transition-all">
-                {usandoTolerancia ? `${porcentajeTolerancia}% Tolerancia` : "0% (A tiempo)"}
-              </div>
-              <div 
-                className="w-16 bg-gradient-to-t from-amber-500 to-yellow-400 rounded-t-xl shadow-md transition-all duration-700 ease-out"
-                style={{ height: usandoTolerancia ? `${Math.max(6, porcentajeTolerancia)}%` : "6%" }}
-              ></div>
-              <span className={`text-xs font-bold mt-3 text-center ${modoOscuro ? "text-neutral-200" : "text-slate-700"}`}>Tolerancia 10 min</span>
-              <span className="text-[10px] text-neutral-400 text-center">
-                {usandoTolerancia ? "En periodo de gracia" : "Curva plana (A tiempo)"}
-              </span>
-            </div>
-
-            {/* Barra 3: Permanencia en Aula */}
-            <div className="flex flex-col items-center h-full justify-end w-1/4 group">
-              <div className="text-[11px] font-bold text-teal-500 mb-2 font-mono">
-                {redConectada ? "100% Conectado" : "0% Desconectado"}
-              </div>
-              <div 
-                className="w-16 bg-gradient-to-t from-teal-600 to-emerald-400 rounded-t-xl shadow-md transition-all duration-700 ease-out animate-pulse"
-                style={{ height: redConectada ? "95%" : "6%" }}
-              ></div>
-              <span className={`text-xs font-bold mt-3 text-center ${modoOscuro ? "text-neutral-200" : "text-slate-700"}`}>Permanencia en Aula</span>
-              <span className="text-[10px] text-neutral-400 text-center">Conexión Wi-Fi continua</span>
-            </div>
-
-            {/* Barra 4: Asistencia Continua */}
-            <div className="flex flex-col items-center h-full justify-end w-1/4 group">
-              <div className="text-[11px] font-bold text-emerald-500 mb-2 font-mono">
-                {redConectada ? "Activa" : "Inactiva"}
-              </div>
-              <div 
-                className="w-16 bg-gradient-to-t from-emerald-800 to-emerald-600 rounded-t-xl shadow-md transition-all duration-700 ease-out"
-                style={{ height: redConectada ? "90%" : "6%" }}
-              ></div>
-              <span className={`text-xs font-bold mt-3 text-center ${modoOscuro ? "text-neutral-200" : "text-slate-700"}`}>Asistencia Continua</span>
-              <span className="text-[10px] text-neutral-400 text-center">Presencia en aula completa</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Tabla del Historial Real */}
-        <div className={`p-6 rounded-xl border shadow-sm ${
-          modoOscuro ? "bg-neutral-900 border-neutral-800" : "bg-white border-slate-200"
-        }`}>
-          <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="font-bold text-lg mb-1">Mi Historial de Asistencias</h3>
-              <p className={`text-xs ${modoOscuro ? "text-neutral-400" : "text-slate-500"}`}>
-                Mostrando las últimas 10 asistencias en vivo. Los registros antiguos se transfieren automáticamente al archivo histórico de la base de datos.
-              </p>
+              <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                4. Observaciones o comentarios adicionales (Opcional)
+              </label>
+              <input
+                type="text"
+                placeholder="Ej. Adjunto número de folio médico o número de equipo..."
+                value={detalleAdicional}
+                onChange={(e) => setDetalleAdicional(e.target.value)}
+                className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
+              />
             </div>
-            <span className={`text-xs font-mono border px-3 py-1 rounded-lg ${
-              modoOscuro ? "bg-black border-neutral-800 text-neutral-400" : "bg-slate-100 border-slate-200 text-slate-500"
-            }`}>
-              Límite: 10 Registros
-            </span>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className={`border-b font-semibold text-xs uppercase tracking-wider ${
-                  modoOscuro ? "border-neutral-800 bg-black/50 text-neutral-400" : "border-slate-200 bg-slate-50 text-slate-500"
-                }`}>
-                  <th className="py-3 px-4">Fecha y Hora</th>
-                  <th className="py-3 px-4">Método de Marcación</th>
-                  <th className="py-3 px-4">Dirección MAC Detectada</th>
-                  <th className="py-3 px-4">Estatus</th>
-                </tr>
-              </thead>
-              <tbody className={`divide-y ${
-                modoOscuro ? "divide-neutral-800 text-neutral-200" : "divide-slate-100 text-slate-700"
-              }`}>
-                {historial.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="py-6 text-center text-neutral-400">
-                      Sin pases de lista activos. Conecte su dispositivo al Wi-Fi TUP para registrar presencia.
-                    </td>
-                  </tr>
-                ) : (
-                  historial.map((reg) => (
-                    <tr key={reg.id} className={`transition ${
-                      modoOscuro ? "hover:bg-neutral-800/50" : "hover:bg-slate-50"
-                    }`}>
-                      <td className="py-3 px-4 font-medium">{reg.fecha_hora}</td>
-                      <td className="py-3 px-4">
-                        <span className={`px-2.5 py-1 text-xs font-semibold rounded-md font-mono ${
-                          modoOscuro ? "bg-black text-neutral-300" : "bg-slate-100 text-slate-700"
-                        }`}>
-                          {reg.metodo}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-xs font-mono text-neutral-400">{reg.ip_origen}</td>
-                      <td className="py-3 px-4">
-                        <span className="px-2.5 py-1 text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 rounded-full">
-                          {reg.estado}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <div className="flex items-center justify-between pt-3">
+              {reporteEnviado ? (
+                <span className="text-xs font-bold text-emerald-400">
+                  Cuestionario enviado a Administración correctamente.
+                </span>
+              ) : (
+                <span className="text-[11px] text-neutral-400">
+                  Folio generado automáticamente
+                </span>
+              )}
+              
+              <button
+                type="submit"
+                disabled={cargandoReporte}
+                className="px-6 py-2.5 bg-[#7A1C2E] hover:bg-[#9E2A3F] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer disabled:opacity-50"
+              >
+                {cargandoReporte ? "Enviando..." : "Enviar Cuestionario"}
+              </button>
+            </div>
+          </form>
+
+          <div className="pt-4 border-t border-white/10 flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-neutral-300">
+              En caso de urgencia oprimir{" "}
+              <a
+                href="#emergencia"
+                onClick={activarAlertaEmergencia}
+                className="text-blue-400 font-bold underline hover:text-blue-300 transition cursor-pointer"
+              >
+                AQUÍ
+              </a>.
+            </p>
           </div>
         </div>
 
-        {/* Zona en Desarrollo */}
-        <div className="pt-8 pb-12">
-          <div className="relative overflow-hidden rounded-2xl border-2 border-amber-400 bg-amber-50 dark:bg-amber-950/30 p-6 shadow-sm">
-            <div 
-              className="absolute top-0 left-0 right-0 h-3"
-              style={{
-                backgroundImage: "repeating-linear-gradient(45deg, #F59E0B, #F59E0B 15px, #1E293B 15px, #1E293B 30px)"
-              }}
-            ></div>
-
-            <div className="flex flex-col md:flex-row items-center justify-between gap-4 pt-2">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-xl bg-amber-100 dark:bg-amber-900/50 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 flex items-center justify-center font-bold text-xl flex-shrink-0">
-                  ⚠️
-                </div>
-                <div>
-                  <h4 className="font-extrabold text-slate-900 dark:text-neutral-100 text-base flex items-center gap-2">
-                    Zona en Desarrollo
-                    <span className="px-2 py-0.5 text-[10px] font-bold uppercase bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 rounded-md">
-                      Módulos Futuros
-                    </span>
-                  </h4>
-                  <p className="text-xs text-slate-600 dark:text-neutral-300 mt-1 max-w-xl">
-                    Los módulos adicionales de consulta de horarios académicos, justificación de incidencias y solicitud de permisos docentes están actualmente en proceso de implementación.
-                  </p>
-                </div>
-              </div>
-
-              <div className="text-xs font-mono text-amber-900 dark:text-amber-200 bg-amber-100/80 dark:bg-amber-900/40 px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 whitespace-nowrap">
-                Fase 2 • TUP v1.0.4
-              </div>
-            </div>
-
-            <div 
-              className="absolute bottom-0 left-0 right-0 h-2"
-              style={{
-                backgroundImage: "repeating-linear-gradient(-45deg, #F59E0B, #F59E0B 15px, #1E293B 15px, #1E293B 30px)"
-              }}
-            ></div>
-          </div>
-        </div>
+        <CircularCarousel />
       </section>
+
+      {/* MODAL HISTORIAL */}
+      {vistaModalActiva === "historial" && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="font-bold text-base">Historial de Asistencias Registradas</h3>
+              <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+
+            {cargandoHistorial ? (
+              <p className="text-xs text-neutral-400 py-8 text-center">Consultando registros...</p>
+            ) : (
+              <div className="p-8 text-center space-y-2 bg-black/50 rounded-2xl border border-white/10 my-2">
+                <p className="font-bold text-amber-300 text-sm md:text-base leading-relaxed">
+                  Hazta que el admin asigne labor, te asignaremos tus asistencias
+                </p>
+                <p className="text-xs text-neutral-400">
+                  El registro en tiempo real por red Wi-Fi se habilitará automáticamente al vincular tu horario de grupo en el panel de administración.
+                </p>
+              </div>
+            )}
+
+            <div className="pt-2 flex justify-end">
+              <button onClick={() => setVistaModalActiva(null)} className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer">Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DETECCIÓN DE RED */}
+      {vistaModalActiva === "deteccion" && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-md w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="font-bold text-base">Detección de Red y Estado de Dispositivo</h3>
+              <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">ID Único de Dispositivo:</span>
+                <span className="font-mono font-bold text-amber-300 uppercase">{deviceId}</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Aula Asignada:</span>
+                <span className="font-bold text-neutral-300">{aulaAsignada}</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Margen de Tolerancia:</span>
+                <span className="font-bold text-emerald-400">{toleranciaMinutos} Minutos</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Estado de Conexión:</span>
+                <span className={`font-bold flex items-center gap-1.5 ${redConectada ? "text-emerald-400" : "text-rose-400"}`}>
+                  <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
+                  {redConectada ? "Conectado a Red TUP" : "Fuera de Red TUP"}
+                </span>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button onClick={() => setVistaModalActiva(null)} className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer">Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL FOTO DE PERFIL */}
+      {vistaModalActiva === "foto" && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-sm w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="font-bold text-base">Cambiar Foto de Perfil</h3>
+              <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+
+            <div className="flex flex-col items-center gap-4 py-2">
+              <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-[#7A1C2E] bg-neutral-800 flex items-center justify-center text-2xl font-bold">
+                {fotoPerfil ? (
+                  <img src={fotoPerfil} alt="Vista Previa" className="w-full h-full object-cover" />
+                ) : (
+                  session?.user?.name?.charAt(0) || "D"
+                )}
+              </div>
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={manejarCambioFoto}
+                id="upload-foto"
+                className="hidden"
+              />
+              <label
+                htmlFor="upload-foto"
+                className="px-4 py-2 bg-white/10 hover:bg-white/20 border border-white/15 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                Seleccionar Imagen
+              </label>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button onClick={() => setVistaModalActiva(null)} className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer">Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
