@@ -224,7 +224,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
-                onClick={() => signOut()}
+                onClick={() => signOut({ callbackUrl: "/" })}
                 className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-300 hover:bg-neutral-800 transition cursor-pointer"
               >
                 Rechazar y Salir

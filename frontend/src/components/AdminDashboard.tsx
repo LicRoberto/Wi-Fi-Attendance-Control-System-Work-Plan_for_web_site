@@ -17,6 +17,8 @@ interface AdminDashboardProps {
   session: any;
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<"bitacora" | "docentes" | "reportes">("bitacora");
   const [registros, setRegistros] = useState<RegistroAsistencia[]>([]);
@@ -30,7 +32,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const cargarTablaAdmin = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/admin/asistencias");
+      const res = await fetch(`${API_URL}/api/admin/asistencias`);
       if (res.ok) {
         const data = await res.json();
         setRegistros(data);
@@ -49,7 +51,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const handleCrearDocente = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("http://localhost:8000/api/admin/docentes", {
+      const res = await fetch(`${API_URL}/api/admin/docentes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(nuevoDocente),
@@ -95,7 +97,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             <p className="text-xs text-slate-500">{session?.user?.email || "admin@tecplayacar.edu.mx"}</p>
           </div>
           <button
-            onClick={() => signOut()}
+            onClick={() => signOut({ callbackUrl: "/" })}
             className="px-4 py-2 text-xs font-semibold text-[#7A1C2E] border border-[#7A1C2E] rounded-lg hover:bg-[#7A1C2E] hover:text-white transition-all cursor-pointer"
           >
             Cerrar Sesión
