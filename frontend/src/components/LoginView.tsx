@@ -29,7 +29,7 @@ export default function LoginView() {
     }
   };
 
-  // Función de Autenticación Biométrica Nativa (WebAuthn / TouchID / Sensor de Huella)
+  // Función de Autenticación Biométrica Nativa (WebAuthn / TouchID / Passkey)
   const iniciarSesionBiometrica = async () => {
     if (!window.PublicKeyCredential) {
       alert("Tu dispositivo o navegador no cuenta con un sensor biométrico compatible.");
@@ -37,13 +37,32 @@ export default function LoginView() {
     }
 
     setCargando(true);
+    setErrorSesion(false);
+
     try {
-      // Simulación/Trigger de solicitud al sensor biométrico del dispositivo
       const authBiometrica = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
       
-      if (authBiometrica) {
-        // En un entorno de producción se solicita la firma criptográfica al hardware del usuario
-        // Entramos directamente con el docente de prueba o el perfil registrado
+      if (!authBiometrica) {
+        alert("No se detectó un lector biométrico activo o configurado en este equipo.");
+        setCargando(false);
+        return;
+      }
+
+      // Solicitud nativa al hardware del dispositivo (Despliega la ventana de Huella/Face ID)
+      const challenge = new Uint8Array(32);
+      window.crypto.getRandomValues(challenge);
+
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          challenge: challenge,
+          timeout: 60000,
+          userVerification: "required",
+          rpId: window.location.hostname,
+        },
+      });
+
+      // Si la verificación física por huella/rostro fue exitosa en el hardware:
+      if (credential) {
         const res = await signIn("credentials", {
           numEmpleado: "DOC-2026-01",
           redirect: false,
@@ -54,11 +73,12 @@ export default function LoginView() {
         } else {
           window.location.href = "/";
         }
-      } else {
-        alert("No se detectó un lector biométrico activo en este equipo.");
       }
-    } catch (err) {
-      console.error("Error biométrico:", err);
+    } catch (err: any) {
+      console.log("Autenticación biométrica cancelada o fallida:", err);
+      if (err.name !== "NotAllowedError") {
+        alert("No se pudo completar la verificación biométrica.");
+      }
     } finally {
       setCargando(false);
     }
@@ -160,10 +180,11 @@ export default function LoginView() {
           <button
             type="button"
             onClick={iniciarSesionBiometrica}
-            className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer hover:scale-[1.01] active:scale-[0.99]"
+            disabled={cargando}
+            className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
           >
-            <span className="text-base"></span>
-            Entrar con biometria
+            <span className="text-base">👆</span>
+            {cargando ? "Solicitando huella/sensor..." : "Entrar con Biometría"}
           </button>
 
           {/* OPCIÓN 2: ACCESO POR GOOGLE */}
