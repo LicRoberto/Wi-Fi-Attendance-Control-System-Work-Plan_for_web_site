@@ -29,7 +29,7 @@ export default function LoginView() {
     }
   };
 
-  // Función de Autenticación Biométrica Nativa (WebAuthn / TouchID / Passkey)
+  // Función de Autenticación Biométrica Nativa (Verificación física en vivo)
   const iniciarSesionBiometrica = async () => {
     if (!window.PublicKeyCredential) {
       alert("Tu dispositivo o navegador no cuenta con un sensor biométrico compatible.");
@@ -48,20 +48,36 @@ export default function LoginView() {
         return;
       }
 
-      // Solicitud nativa al hardware del dispositivo (Despliega la ventana de Huella/Face ID)
+      // Desafío seguro para la lectura biométrica física
       const challenge = new Uint8Array(32);
       window.crypto.getRandomValues(challenge);
 
-      const credential = await navigator.credentials.get({
+      // Solicitud nativa al hardware (Activa el sensor de Huella / Face ID del celular/PC)
+      const credential = await navigator.credentials.create({
         publicKey: {
           challenge: challenge,
+          rp: {
+            name: "Control de Asistencia TUP",
+            id: window.location.hostname,
+          },
+          user: {
+            id: new Uint8Array(16),
+            name: "docente@tup.edu.mx",
+            displayName: "Docente TUP",
+          },
+          pubKeyCredParams: [
+            { alg: -7, type: "public-key" },
+            { alg: -257, type: "public-key" },
+          ],
           timeout: 60000,
-          userVerification: "required",
-          rpId: window.location.hostname,
+          authenticatorSelection: {
+            authenticatorAttachment: "platform",
+            userVerification: "required",
+          },
         },
       });
 
-      // Si la verificación física por huella/rostro fue exitosa en el hardware:
+      // Si el sensor escaneó con éxito la huella/rostro en el hardware:
       if (credential) {
         const res = await signIn("credentials", {
           numEmpleado: "DOC-2026-01",
