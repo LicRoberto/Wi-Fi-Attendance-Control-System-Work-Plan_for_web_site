@@ -17,7 +17,7 @@ interface AdminDashboardProps {
   session: any;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
 
 export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<"bitacora" | "docentes" | "reportes">("bitacora");
@@ -28,6 +28,11 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const [showModalDocente, setShowModalDocente] = useState(false);
   const [nuevoDocente, setNuevoDocente] = useState({ nombre: "", email: "", matricula: "", password: "" });
+
+  const manejarCerrarSesion = async () => {
+    await signOut({ redirect: false });
+    window.location.href = "/";
+  };
 
   const cargarTablaAdmin = async () => {
     setLoading(true);
@@ -69,7 +74,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     }
   };
 
-  // Filtrado dinámico de la tabla
   const registrosFiltrados = registros.filter((reg) => {
     const coincideTexto =
       reg.usuario.toLowerCase().includes(busqueda.toLowerCase()) ||
@@ -97,7 +101,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             <p className="text-xs text-slate-500">{session?.user?.email || "admin@tecplayacar.edu.mx"}</p>
           </div>
           <button
-            onClick={() => signOut({ callbackUrl: "/" })}
+            onClick={manejarCerrarSesion}
             className="px-4 py-2 text-xs font-semibold text-[#7A1C2E] border border-[#7A1C2E] rounded-lg hover:bg-[#7A1C2E] hover:text-white transition-all cursor-pointer"
           >
             Cerrar Sesión

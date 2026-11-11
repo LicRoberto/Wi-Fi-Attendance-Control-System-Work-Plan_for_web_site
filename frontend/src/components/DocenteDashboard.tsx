@@ -31,7 +31,12 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
+
+  const manejarCerrarSesion = async () => {
+    await signOut({ redirect: false });
+    window.location.href = "/";
+  };
 
   const generarDeviceFingerprint = (): string => {
     let devId = localStorage.getItem("tup_device_fingerprint");
@@ -224,7 +229,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
-                onClick={() => signOut({ callbackUrl: "/" })}
+                onClick={manejarCerrarSesion}
                 className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-300 hover:bg-neutral-800 transition cursor-pointer"
               >
                 Rechazar y Salir
@@ -320,7 +325,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           </div>
 
           <button
-            onClick={() => signOut()}
+            onClick={manejarCerrarSesion}
             className="px-3.5 py-1.5 text-xs font-semibold text-rose-400 border border-rose-500/50 rounded-xl hover:bg-rose-600 hover:text-white transition-all cursor-pointer"
           >
             Cerrar Sesión
