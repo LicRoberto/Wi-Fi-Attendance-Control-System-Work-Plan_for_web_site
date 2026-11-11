@@ -8,11 +8,12 @@ import DocenteDashboard from "@/components/DocenteDashboard";
 import AdminDashboard from "@/components/AdminDashboard";
 
 const TIEMPO_EXPIRACION_MS = 10 * 60 * 1000; // 10 Minutos
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Home() {
   const { data: session, status } = useSession();
   const [rolUsuario, setRolUsuario] = useState<string>("docente");
-  const [mensajeSesion, setMensajeSesion] = useState<string | null>(null);
+  const [, setMensajeSesion] = useState<string | null>(null);
 
   useEffect(() => {
     // Control de tiempo fuera/cierre de pestaña
@@ -37,8 +38,8 @@ export default function Home() {
       if (!expirado) {
         localStorage.setItem("tup_last_active", Date.now().toString());
 
-        // Consultar el rol del usuario en la API
-        fetch(`http://localhost:8000/api/usuarios/me?email=${encodeURIComponent(session.user?.email || "")}`)
+        // Consultar el rol del usuario en la API pública
+        fetch(`${API_URL}/api/usuarios/me?email=${encodeURIComponent(session.user?.email || "")}`)
           .then((res) => res.json())
           .then((data) => {
             if (data?.rol) setRolUsuario(data.rol);
@@ -69,7 +70,7 @@ export default function Home() {
   }
 
   if (!session) {
-    return <LoginView mensajeError={mensajeSesion} />;
+    return <LoginView />;
   }
 
   if (rolUsuario === "admin") {
