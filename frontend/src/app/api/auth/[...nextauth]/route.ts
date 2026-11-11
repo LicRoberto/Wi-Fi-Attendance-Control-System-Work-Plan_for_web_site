@@ -2,7 +2,10 @@ import NextAuth, { AuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export const authOptions: AuthOptions = {
+  secret: process.env.NEXTAUTH_SECRET || "tup_secret_key_production_2026",
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || "",
@@ -19,9 +22,9 @@ export const authOptions: AuthOptions = {
         const numEmpUpper = credentials.numEmpleado.trim().toUpperCase();
 
         try {
-          // Consulta al backend FastAPI sin exigir contraseña
+          // Usar la URL dinámica de producción
           const res = await fetch(
-            `http://localhost:8000/api/usuarios/me?num_empleado=${encodeURIComponent(numEmpUpper)}`,
+            `${API_URL}/api/usuarios/me?num_empleado=${encodeURIComponent(numEmpUpper)}`,
             { method: "GET" }
           );
 
