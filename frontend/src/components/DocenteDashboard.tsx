@@ -3,8 +3,6 @@
 import { signOut } from "next-auth/react";
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import ParticlesBackground from "./ParticlesBackground";
-import CircularCarousel from "./CircularCarousel";
 
 interface DocenteDashboardProps {
   session: any;
@@ -14,7 +12,6 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [menuTupAbierto, setMenuTupAbierto] = useState<boolean>(false);
   const [vistaModalActiva, setVistaModalActiva] = useState<"historial" | "deteccion" | "foto" | null>(null);
 
-  // Huella Digital del Dispositivo en lugar de MAC hardcodeada
   const [deviceId, setDeviceId] = useState<string>("Generando Huella...");
   const [redConectada, setRedConectada] = useState<boolean>(false);
   const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
@@ -34,7 +31,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Generador de Huella Digital Web Única por Dispositivo
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
   const generarDeviceFingerprint = (): string => {
     let devId = localStorage.getItem("tup_device_fingerprint");
     if (!devId) {
@@ -98,7 +96,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/usuarios/me?email=${encodeURIComponent(email)}&device_id=${encodeURIComponent(fingerprint)}`);
+      const res = await fetch(`${API_URL}/api/usuarios/me?email=${encodeURIComponent(email)}&device_id=${encodeURIComponent(fingerprint)}`);
       if (res.ok) {
         const data = await res.json();
         setDeviceId(data.mac_address || fingerprint);
@@ -110,7 +108,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const evaluarRedWifiReal = async (email: string, fingerprint: string) => {
     try {
-      const res = await fetch("http://localhost:8000/api/asistencias/auto-marcar", {
+      const res = await fetch(`${API_URL}/api/asistencias/auto-marcar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, device_fingerprint: fingerprint }),
@@ -149,7 +147,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
     setCargandoReporte(true);
     try {
-      await fetch("http://localhost:8000/api/incidencias/crear", {
+      await fetch(`${API_URL}/api/incidencias/crear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -191,9 +189,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   };
 
   return (
-    <main className="relative min-h-screen text-white font-sans overflow-hidden">
-      <ParticlesBackground />
-
+    <main className="relative min-h-screen text-white font-sans bg-gradient-to-br from-neutral-950 via-neutral-900 to-stone-950">
       {mostrarModalPermisos && (
         <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="max-w-lg w-full rounded-2xl shadow-2xl border border-white/10 bg-neutral-900/90 text-white p-6 space-y-4">
@@ -244,7 +240,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       )}
 
-      <header className="relative z-40 border-b border-white/10 bg-neutral-900/40 backdrop-blur-md px-6 md:px-8 py-3.5 flex items-center justify-between shadow-lg">
+      <header className="relative z-40 border-b border-white/10 bg-neutral-900/60 backdrop-blur-md px-6 md:px-8 py-3.5 flex items-center justify-between shadow-lg">
         <div className="flex items-center gap-4">
           <div className="relative" ref={menuRef}>
             <button
@@ -333,7 +329,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       </header>
 
       <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
-        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/50 backdrop-blur-xl shadow-2xl space-y-6">
+        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-6">
           <div className="border-b border-white/10 pb-4">
             <h3 className="text-lg md:text-xl font-extrabold text-white">
               Solicitudes, Justificaciones e Incidencias
@@ -437,8 +433,6 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
             </p>
           </div>
         </div>
-
-        <CircularCarousel />
       </section>
 
       {/* MODAL HISTORIAL */}
