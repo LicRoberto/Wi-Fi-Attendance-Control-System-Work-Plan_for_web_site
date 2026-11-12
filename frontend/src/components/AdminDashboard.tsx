@@ -18,6 +18,7 @@ interface RedWifi {
   password: string;
   zona: string;
   activa: boolean;
+  calibrada?: boolean;
 }
 
 interface AdminDashboardProps {
@@ -39,6 +40,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const [nuevaRed, setNuevaRed] = useState({ ssid: "", password: "", zona: "" });
   const [guardandoRed, setGuardandoRed] = useState(false);
+  const [calibrandoSsid, setCalibrandoSsid] = useState<string | null>(null);
 
   const manejarCerrarSesion = async () => {
     await signOut({ redirect: false });
@@ -97,6 +99,24 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       console.error("Error al guardar red Wi-Fi", err);
     } finally {
       setGuardandoRed(false);
+    }
+  };
+
+  const handleCalibrarRed = async (ssid: string) => {
+    setCalibrandoSsid(ssid);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}/calibrar`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.mensaje);
+        await cargarRedesWifi();
+      }
+    } catch (err) {
+      console.error("Error al calibrar red Wi-Fi", err);
+    } finally {
+      setCalibrandoSsid(null);
     }
   };
 
@@ -331,7 +351,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
               <h3 className="text-lg font-bold text-slate-900 mb-1">Agregar Red Institucional</h3>
               <p className="text-xs text-slate-500 mb-4">
-                Las redes se codifican en binario automáticamente para vincular los tokens de los dispositivos docentes.
+                Al guardar desde el campus, la red se codifica en binario y se vincula automáticamente al enlace Wi-Fi actual.
               </p>
 
               <form onSubmit={handleAgregarRed} className="space-y-4">
@@ -373,7 +393,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                   disabled={guardandoRed}
                   className="w-full py-2.5 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-bold rounded-lg transition cursor-pointer disabled:opacity-50"
                 >
-                  {guardandoRed ? "Codificando Red..." : "+ Codificar y Guardar Red"}
+                  {guardandoRed ? "Codificando Red..." : "+ Codificar y Vincular Red Actual"}
                 </button>
               </form>
             </div>
@@ -382,7 +402,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-bold text-slate-900">Redes Wi-Fi Autorizadas</h3>
-                  <p className="text-xs text-slate-500">Redes activas reconocidas por el token automático.</p>
+                  <p className="text-xs text-slate-500">Conéctate al Wi-Fi del campus y vincula la firma de red con 1 clic.</p>
                 </div>
                 <button
                   onClick={cargarRedesWifi}
@@ -396,28 +416,46 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 {redesWifi.map((red) => (
                   <div
                     key={red.ssid}
-                    className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-4"
+                    className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                   >
                     <div>
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`w-2.5 h-2.5 rounded-full ${red.calibrada ? "bg-emerald-500" : "bg-amber-500"}`}></span>
                         <span className="font-bold text-sm text-slate-900">{red.ssid}</span>
-                        <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 text-emerald-800 rounded-full">
-                          BINARIO ACTIVO
+                        <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
+                          red.calibrada
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}>
+                          {red.calibrada ? "ENLACE VINCULADO" : "PENDIENTE DE VINCULAR"}
                         </span>
                       </div>
                       <p className="text-xs text-slate-600 mt-1">{red.zona}</p>
                       <p className="text-[11px] font-mono text-slate-400 mt-0.5">Clave: {red.password}</p>
                     </div>
 
-                    {red.ssid !== "TUP" && (
+                    <div className="flex items-center gap-2">
                       <button
-                        onClick={() => handleEliminarRed(red.ssid)}
-                        className="px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
+                        onClick={() => handleCalibrarRed(red.ssid)}
+                        disabled={calibrandoSsid === red.ssid}
+                        className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition cursor-pointer disabled:opacity-50"
                       >
-                        Eliminar
+                        {calibrandoSsid === red.ssid
+                          ? "Vinculando..."
+                          : red.calibrada
+                          ? "Re-vincular Wi-Fi actual"
+                          : "Vincular con mi Wi-Fi actual"}
                       </button>
-                    )}
+
+                      {red.ssid !== "TUP" && (
+                        <button
+                          onClick={() => handleEliminarRed(red.ssid)}
+                          className="px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
+                        >
+                          Eliminar
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

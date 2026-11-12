@@ -30,6 +30,12 @@ def _get_admin_email() -> str:
     chars = [_ADM_BIN[i:i+8] for i in range(0, len(_ADM_BIN), 8)]
     return "".join(chr(int(c, 2)) for c in chars)
 
+def _obtener_origen_cliente(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
 class RedWifiCreate(BaseModel):
     ssid: str
     password: str
@@ -172,7 +178,6 @@ def actualizar_consentimiento(datos: PermisosConsentimientoRequest, db: Session 
 def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Session = Depends(get_db)):
     usuario = db.query(models.Usuario).filter(models.Usuario.email == datos.email).first()
     
-    # Si el usuario entra por primera vez (ej. docente@tup.edu.mx), crearlo al vuelo
     if not usuario:
         admin_email = _get_admin_email()
         es_admin = (datos.email.lower() == admin_email.lower())
@@ -195,22 +200,22 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             "ssid_actual": None
         }
 
-    # Si viene un nuevo fingerprint válido, lo vincula automáticamente al usuario
     if datos.device_fingerprint and usuario.mac_address != datos.device_fingerprint:
         usuario.mac_address = datos.device_fingerprint
         db.commit()
 
-    # Validación automática por Token de Dispositivo + Red Institucional Codificada Activa
+    origen_cliente = _obtener_origen_cliente(request)
     ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
     red_activa_info = network_manager.validar_conexion_dispositivo(
         device_id=dispositivo_id,
+        client_host=origen_cliente,
         ssid_reportado=ssid_detectado
     )
 
     if not red_activa_info["valida"]:
         return {
             "status": "red_invalida",
-            "mensaje": "No hay redes Wi-Fi institucionales activas para vincular el token.",
+            "mensaje": red_activa_info.get("motivo", "Fuera de la red Wi-Fi institucional del TUP."),
             "red_activa": False,
             "ssid_actual": None
         }
@@ -303,12 +308,19 @@ def listar_redes_wifi():
     return network_manager.obtener_redes_decodificadas()
 
 @app.post("/api/admin/redes-wifi")
-def registrar_red_wifi(datos: RedWifiCreate):
+def registrar_red_wifi(datos: RedWifiCreate, request: Request):
+    origen_cliente = _obtener_origen_cliente(request)
     return network_manager.agregar_o_actualizar_red(
         ssid=datos.ssid,
         password=datos.password,
-        zona=datos.zona
+        zona=datos.zona,
+        client_host=origen_cliente
     )
+
+@app.post("/api/admin/redes-wifi/{ssid}/calibrar")
+def calibrar_red_wifi(ssid: str, request: Request):
+    origen_cliente = _obtener_origen_cliente(request)
+    return network_manager.vincular_firma_actual_a_red(ssid=ssid, client_host=origen_cliente)
 
 @app.delete("/api/admin/redes-wifi/{ssid}")
 def eliminar_red_wifi(ssid: str):
