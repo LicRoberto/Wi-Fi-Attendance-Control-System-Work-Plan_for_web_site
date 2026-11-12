@@ -171,8 +171,20 @@ def actualizar_consentimiento(datos: PermisosConsentimientoRequest, db: Session 
 @app.post("/api/asistencias/auto-marcar")
 def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Session = Depends(get_db)):
     usuario = db.query(models.Usuario).filter(models.Usuario.email == datos.email).first()
+    
+    # Si el usuario entra por primera vez (ej. docente@tup.edu.mx), crearlo al vuelo
     if not usuario:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        admin_email = _get_admin_email()
+        es_admin = (datos.email.lower() == admin_email.lower())
+        usuario = models.Usuario(
+            email=datos.email,
+            nombre="Docente TUP" if not es_admin else "Administrador TUP",
+            rol="admin" if es_admin else "docente",
+            mac_address=datos.device_fingerprint or "TUP-DEV-AUTO"
+        )
+        db.add(usuario)
+        db.commit()
+        db.refresh(usuario)
 
     dispositivo_id = datos.device_fingerprint or usuario.mac_address
     if not dispositivo_id or dispositivo_id == "TUP-DEV-PENDIENTE":
