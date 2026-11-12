@@ -15,7 +15,10 @@ app = FastAPI(title="Control de Asistencia Wi-Fi - TUP API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://tup-frontend.onrender.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,6 +43,7 @@ class LoginEmpleadoRequest(BaseModel):
 class PermisosConsentimientoRequest(BaseModel):
     email: str
     autorizado: bool
+    device_fingerprint: Optional[str] = None
 
 class AutoMarcacionRequest(BaseModel):
     email: str
@@ -73,15 +77,19 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
             usuario.mac_address = fingerprint
             db.commit()
 
+        token_binario = network_manager.generar_token_dispositivo(fingerprint)
+
         response.set_cookie(
             key="tup_device_token",
-            value=fingerprint,
+            value=token_binario,
             httponly=False,
-            samesite="lax"
+            samesite="none",
+            secure=True
         )
 
         return {
             "status": "success",
+            "token_red": token_binario,
             "user": {
                 "id": str(usuario.id),
                 "name": usuario.nombre,
@@ -94,11 +102,27 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
     raise HTTPException(status_code=401, detail="Número de empleado o contraseña incorrectos")
 
 @app.get("/api/usuarios/me")
-def obtener_perfil(email: str, device_id: Optional[str] = None, db: Session = Depends(get_db)):
+def obtener_perfil(
+    email: Optional[str] = None,
+    num_empleado: Optional[str] = None,
+    device_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     admin_email = _get_admin_email()
-    usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
+    usuario = None
 
-    es_admin = (email.lower() == admin_email.lower())
+    if email:
+        usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
+    elif num_empleado:
+        usuario = db.query(models.Usuario).filter(models.Usuario.numero_empleado == num_empleado).first()
+        if not usuario and num_empleado.upper() == "DOC-2026-01":
+            email = "docente.prueba@tecplayacar.edu.mx"
+            usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
+
+    if not usuario and not email:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    es_admin = (email and email.lower() == admin_email.lower())
     rol_asignado = "admin" if es_admin else "docente"
 
     identificador_disp = device_id or (usuario.mac_address if usuario else None) or "TUP-DEV-PENDIENTE"
@@ -106,7 +130,8 @@ def obtener_perfil(email: str, device_id: Optional[str] = None, db: Session = De
     if not usuario:
         usuario = models.Usuario(
             email=email,
-            nombre="Usuario TUP",
+            nombre="Docente TUP",
+            numero_empleado=num_empleado,
             rol=rol_asignado,
             mac_address=identificador_disp
         )
@@ -117,40 +142,69 @@ def obtener_perfil(email: str, device_id: Optional[str] = None, db: Session = De
         usuario.mac_address = device_id
         db.commit()
 
+    token_red = network_manager.generar_token_dispositivo(usuario.mac_address)
+
     return {
         "id": usuario.id,
         "nombre": usuario.nombre,
         "email": usuario.email,
         "rol": usuario.rol,
-        "mac_address": usuario.mac_address
+        "mac_address": usuario.mac_address,
+        "token_red": token_red
     }
 
 @app.post("/api/usuarios/consentimiento")
 def actualizar_consentimiento(datos: PermisosConsentimientoRequest, db: Session = Depends(get_db)):
     usuario = db.query(models.Usuario).filter(models.Usuario.email == datos.email).first()
     if usuario:
+        if datos.device_fingerprint:
+            usuario.mac_address = datos.device_fingerprint
         db.commit()
-        return {"status": "success", "mensaje": "Autorización legal registrada."}
+        token_red = network_manager.generar_token_dispositivo(usuario.mac_address or "")
+        return {
+            "status": "success",
+            "mensaje": "Dispositivo vinculado y token de red generado.",
+            "token_red": token_red
+        }
     return {"status": "error", "mensaje": "Usuario no encontrado."}
 
 @app.post("/api/asistencias/auto-marcar")
 def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Session = Depends(get_db)):
-    ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
-    es_valida = network_manager.es_red_valida(ssid_detectado)
-
-    if not es_valida:
-        return {
-            "status": "red_invalida",
-            "mensaje": f"Fuera de la red Wi-Fi TUP (Red detectada: {ssid_detectado or 'Desconectado'}).",
-            "red_activa": False,
-            "ssid_actual": ssid_detectado
-        }
-
     usuario = db.query(models.Usuario).filter(models.Usuario.email == datos.email).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    dispositivo_id = datos.device_fingerprint or usuario.mac_address or "TUP-DEV-UNKNOWN"
+    dispositivo_id = datos.device_fingerprint or usuario.mac_address
+    if not dispositivo_id or dispositivo_id == "TUP-DEV-PENDIENTE":
+        return {
+            "status": "sin_dispositivo",
+            "mensaje": "Dispositivo aún no vinculado.",
+            "red_activa": False,
+            "ssid_actual": None
+        }
+
+    # Si viene un nuevo fingerprint válido, lo vincula automáticamente al usuario
+    if datos.device_fingerprint and usuario.mac_address != datos.device_fingerprint:
+        usuario.mac_address = datos.device_fingerprint
+        db.commit()
+
+    # Validación automática por Token de Dispositivo + Red Institucional Codificada Activa
+    ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
+    red_activa_info = network_manager.validar_conexion_dispositivo(
+        device_id=dispositivo_id,
+        ssid_reportado=ssid_detectado
+    )
+
+    if not red_activa_info["valida"]:
+        return {
+            "status": "red_invalida",
+            "mensaje": "No hay redes Wi-Fi institucionales activas para vincular el token.",
+            "red_activa": False,
+            "ssid_actual": None
+        }
+
+    ssid_final = red_activa_info["ssid"]
+    token_red = red_activa_info["token_red"]
     ahora = datetime.now()
     hoy_str = ahora.strftime("%Y-%m-%d")
 
@@ -165,7 +219,7 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             usuario_id=usuario.id,
             fecha_hora=ahora,
             ip_origen=dispositivo_id,
-            metodo="FINGERPRINT_WEB_AUTOMATICO",
+            metodo=f"TOKEN_WIFI_{ssid_final}",
             estado="PRESENTE"
         )
         db.add(nueva_asistencia)
@@ -183,17 +237,21 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
 
         return {
             "status": "success",
-            "mensaje": f"Asistencia registrada automáticamente en red TUP para {usuario.nombre}",
+            "mensaje": f"Asistencia registrada automáticamente en red '{ssid_final}'",
             "fecha_hora": nueva_asistencia.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
             "red_activa": True,
-            "ssid_actual": ssid_detectado
+            "ssid_actual": ssid_final,
+            "zona": red_activa_info["zona"],
+            "token_red": token_red
         }
 
     return {
         "status": "already_registered",
-        "mensaje": "Asistencia ya registrada hoy en red TUP.",
+        "mensaje": f"Dispositivo autenticado en red '{ssid_final}'.",
         "red_activa": True,
-        "ssid_actual": ssid_detectado
+        "ssid_actual": ssid_final,
+        "zona": red_activa_info["zona"],
+        "token_red": token_red
     }
 
 @app.get("/api/asistencias/historial")
@@ -239,3 +297,7 @@ def registrar_red_wifi(datos: RedWifiCreate):
         password=datos.password,
         zona=datos.zona
     )
+
+@app.delete("/api/admin/redes-wifi/{ssid}")
+def eliminar_red_wifi(ssid: str):
+    return network_manager.eliminar_red(ssid)

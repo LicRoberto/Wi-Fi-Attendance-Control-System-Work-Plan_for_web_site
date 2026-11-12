@@ -13,6 +13,13 @@ interface RegistroAsistencia {
   estado: string;
 }
 
+interface RedWifi {
+  ssid: string;
+  password: string;
+  zona: string;
+  activa: boolean;
+}
+
 interface AdminDashboardProps {
   session: any;
 }
@@ -20,14 +27,18 @@ interface AdminDashboardProps {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
 
 export default function AdminDashboard({ session }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<"bitacora" | "docentes" | "reportes">("bitacora");
+  const [activeTab, setActiveTab] = useState<"bitacora" | "redes" | "docentes" | "reportes">("bitacora");
   const [registros, setRegistros] = useState<RegistroAsistencia[]>([]);
+  const [redesWifi, setRedesWifi] = useState<RedWifi[]>([]);
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("TODOS");
   const [loading, setLoading] = useState(false);
 
   const [showModalDocente, setShowModalDocente] = useState(false);
   const [nuevoDocente, setNuevoDocente] = useState({ nombre: "", email: "", matricula: "", password: "" });
+
+  const [nuevaRed, setNuevaRed] = useState({ ssid: "", password: "", zona: "" });
+  const [guardandoRed, setGuardandoRed] = useState(false);
 
   const manejarCerrarSesion = async () => {
     await signOut({ redirect: false });
@@ -49,9 +60,58 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     }
   };
 
+  const cargarRedesWifi = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/redes-wifi`);
+      if (res.ok) {
+        const data = await res.json();
+        setRedesWifi(data);
+      }
+    } catch (err) {
+      console.error("Error al obtener redes Wi-Fi", err);
+    }
+  };
+
   useEffect(() => {
     cargarTablaAdmin();
+    cargarRedesWifi();
   }, []);
+
+  const handleAgregarRed = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nuevaRed.ssid.trim() || !nuevaRed.zona.trim()) return;
+
+    setGuardandoRed(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/redes-wifi`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nuevaRed),
+      });
+
+      if (res.ok) {
+        setNuevaRed({ ssid: "", password: "", zona: "" });
+        await cargarRedesWifi();
+      }
+    } catch (err) {
+      console.error("Error al guardar red Wi-Fi", err);
+    } finally {
+      setGuardandoRed(false);
+    }
+  };
+
+  const handleEliminarRed = async (ssid: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        await cargarRedesWifi();
+      }
+    } catch (err) {
+      console.error("Error al eliminar red Wi-Fi", err);
+    }
+  };
 
   const handleCrearDocente = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -113,16 +173,16 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         {/* CARDS METRICAS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Estado del Sistema</span>
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Redes Institucionales</span>
             <p className="text-xl font-bold text-emerald-600 mt-2 flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span> Servidor Wi-Fi Activo
+              <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span> {redesWifi.length} Redes Codificadas
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Acciones Rápidas</span>
             <button
               onClick={() => setShowModalDocente(true)}
-              className="mt-2 w-full py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-semibold rounded-lg transition shadow-sm"
+              className="mt-2 w-full py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-semibold rounded-lg transition shadow-sm cursor-pointer"
             >
               + Registrar Nuevo Docente
             </button>
@@ -134,10 +194,10 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         </div>
 
         {/* NAVEGACIÓN POR PESTAÑAS */}
-        <div className="flex border-b border-slate-200 mb-6 gap-4">
+        <div className="flex border-b border-slate-200 mb-6 gap-6 overflow-x-auto">
           <button
             onClick={() => setActiveTab("bitacora")}
-            className={`pb-3 text-sm font-semibold transition ${
+            className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
               activeTab === "bitacora"
                 ? "border-b-2 border-[#7A1C2E] text-[#7A1C2E]"
                 : "text-slate-500 hover:text-slate-800"
@@ -146,8 +206,18 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             Bitácora de Asistencias
           </button>
           <button
+            onClick={() => setActiveTab("redes")}
+            className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
+              activeTab === "redes"
+                ? "border-b-2 border-[#7A1C2E] text-[#7A1C2E]"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Redes Wi-Fi TUP
+          </button>
+          <button
             onClick={() => setActiveTab("docentes")}
-            className={`pb-3 text-sm font-semibold transition ${
+            className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
               activeTab === "docentes"
                 ? "border-b-2 border-[#7A1C2E] text-[#7A1C2E]"
                 : "text-slate-500 hover:text-slate-800"
@@ -157,7 +227,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </button>
           <button
             onClick={() => setActiveTab("reportes")}
-            className={`pb-3 text-sm font-semibold transition ${
+            className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
               activeTab === "reportes"
                 ? "border-b-2 border-[#7A1C2E] text-[#7A1C2E]"
                 : "text-slate-500 hover:text-slate-800"
@@ -174,11 +244,10 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Bitácora de Asistencias Generales</h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  Registros en tiempo real detectados por la infraestructura Wi-Fi.
+                  Registros validados automáticamente mediante Token de Red e ID de Dispositivo.
                 </p>
               </div>
 
-              {/* FILTROS Y BUSCADOR */}
               <div className="flex items-center gap-3">
                 <input
                   type="text"
@@ -193,14 +262,14 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                   className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
                 >
                   <option value="TODOS">Todos los estados</option>
-                  <option value="ASISTENCIA">Asistencia</option>
+                  <option value="PRESENTE">Presente</option>
                   <option value="RETARDO">Retardo</option>
                   <option value="FALTA">Falta</option>
                 </select>
                 <button
                   onClick={cargarTablaAdmin}
                   disabled={loading}
-                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition"
+                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
                 >
                   {loading ? "..." : "Actualizar"}
                 </button>
@@ -214,14 +283,15 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                     <th className="py-3 px-4">Usuario</th>
                     <th className="py-3 px-4">Correo Institucional</th>
                     <th className="py-3 px-4">Fecha y Hora</th>
-                    <th className="py-3 px-4">Origen Wi-Fi</th>
+                    <th className="py-3 px-4">ID Dispositivo</th>
+                    <th className="py-3 px-4">Red / Método</th>
                     <th className="py-3 px-4">Estatus</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
                   {registrosFiltrados.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-6 text-center text-slate-400">
+                      <td colSpan={6} className="py-6 text-center text-slate-400">
                         {loading ? "Cargando registros..." : "No se encontraron marcaciones."}
                       </td>
                     </tr>
@@ -231,7 +301,8 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                         <td className="py-3 px-4 font-semibold text-slate-900">{reg.usuario}</td>
                         <td className="py-3 px-4 text-slate-500">{reg.email}</td>
                         <td className="py-3 px-4">{reg.fecha_hora}</td>
-                        <td className="py-3 px-4 text-xs font-mono text-slate-500">{reg.ip_origen}</td>
+                        <td className="py-3 px-4 text-xs font-mono font-bold text-slate-700">{reg.ip_origen}</td>
+                        <td className="py-3 px-4 text-xs font-mono text-slate-500">{reg.metodo}</td>
                         <td className="py-3 px-4">
                           <span
                             className={`px-2.5 py-1 text-xs font-semibold rounded-full ${
@@ -254,6 +325,106 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* CONTENIDO DE PESTAÑA: REDES WI-FI TUP */}
+        {activeTab === "redes" && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <h3 className="text-lg font-bold text-slate-900 mb-1">Agregar Red Institucional</h3>
+              <p className="text-xs text-slate-500 mb-4">
+                Las redes se codifican en binario automáticamente para vincular los tokens de los dispositivos docentes.
+              </p>
+
+              <form onSubmit={handleAgregarRed} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Nombre de la Red (SSID) *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. TUP-AULAS-2"
+                    value={nuevaRed.ssid}
+                    onChange={(e) => setNuevaRed({ ...nuevaRed, ssid: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Clave de Acceso Wi-Fi *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. tecplayacar2026"
+                    value={nuevaRed.password}
+                    onChange={(e) => setNuevaRed({ ...nuevaRed, password: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Zona / Edificio / Aula *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Edificio B - Laboratorios"
+                    value={nuevaRed.zona}
+                    onChange={(e) => setNuevaRed({ ...nuevaRed, zona: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={guardandoRed}
+                  className="w-full py-2.5 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-bold rounded-lg transition cursor-pointer disabled:opacity-50"
+                >
+                  {guardandoRed ? "Codificando Red..." : "+ Codificar y Guardar Red"}
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Redes Wi-Fi Autorizadas</h3>
+                  <p className="text-xs text-slate-500">Redes activas reconocidas por el token automático.</p>
+                </div>
+                <button
+                  onClick={cargarRedesWifi}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+                >
+                  Actualizar
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {redesWifi.map((red) => (
+                  <div
+                    key={red.ssid}
+                    className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-4"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                        <span className="font-bold text-sm text-slate-900">{red.ssid}</span>
+                        <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 text-emerald-800 rounded-full">
+                          BINARIO ACTIVO
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-1">{red.zona}</p>
+                      <p className="text-[11px] font-mono text-slate-400 mt-0.5">Clave: {red.password}</p>
+                    </div>
+
+                    {red.ssid !== "TUP" && (
+                      <button
+                        onClick={() => handleEliminarRed(red.ssid)}
+                        className="px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
+                      >
+                        Eliminar
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* CONTENIDO DE PESTAÑA: DOCENTES */}
         {activeTab === "docentes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center py-12">
@@ -263,7 +434,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             </p>
             <button
               onClick={() => setShowModalDocente(true)}
-              className="px-4 py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-semibold rounded-lg transition"
+              className="px-4 py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-semibold rounded-lg transition cursor-pointer"
             >
               + Agregar Docente
             </button>
@@ -279,7 +450,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               <input type="date" className="px-3 py-2 text-xs border border-slate-200 rounded-lg" />
               <span className="text-xs text-slate-400">a</span>
               <input type="date" className="px-3 py-2 text-xs border border-slate-200 rounded-lg" />
-              <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition">
+              <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer">
                 Descargar Reporte (CSV)
               </button>
             </div>

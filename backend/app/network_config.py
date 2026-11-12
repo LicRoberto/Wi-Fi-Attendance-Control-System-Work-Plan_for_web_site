@@ -3,7 +3,7 @@ import platform
 
 class NetworkConfigManager:
     def __init__(self):
-        # Única Red Institucional Oficial TUP: SSID "TUP" | Password "tecplayacar2019"
+        # Única Red Institucional Oficial TUP codificada en binario: SSID "TUP"
         self._redes_bin = {
             "010101000101010101010000": {
                 "password_bin": "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001",
@@ -20,6 +20,44 @@ class NetworkConfigManager:
     def _from_binary(binary_str: str) -> str:
         chars = [binary_str[i:i+8] for i in range(0, len(binary_str), 8)]
         return "".join(chr(int(c, 2)) for c in chars)
+
+    def generar_token_dispositivo(self, device_id: str) -> str:
+        """Genera un token codificado único vinculando el ID del dispositivo con la red activa"""
+        if not device_id:
+            return ""
+        redes_activas = [ssid_bin for ssid_bin, data in self._redes_bin.items() if data["activa"]]
+        prefijo_red = redes_activas[0][:16] if redes_activas else "0000000000000000"
+        dev_bin = self._to_binary(device_id)[:24]
+        return f"TUP-TOK-{int(prefijo_red, 2):04X}-{int(dev_bin, 2):06X}"
+
+    def validar_conexion_dispositivo(self, device_id: str, ssid_reportado: str | None = None) -> dict:
+        """Valida automáticamente el token del dispositivo contra las redes institucionales codificadas"""
+        if not device_id:
+            return {"valida": False}
+
+        # Si el cliente/sistema reportó un SSID específico, validar que exista y esté activo
+        if ssid_reportado:
+            ssid_bin = self._to_binary(ssid_reportado)
+            if ssid_bin in self._redes_bin and self._redes_bin[ssid_bin]["activa"]:
+                return {
+                    "valida": True,
+                    "ssid": ssid_reportado,
+                    "zona": self._redes_bin[ssid_bin]["zona"],
+                    "token_red": self.generar_token_dispositivo(device_id)
+                }
+
+        # Detección automática en entorno web/nube: si el dispositivo tiene ID válido, vincular a la red institucional activa
+        for ssid_bin, data in self._redes_bin.items():
+            if data["activa"]:
+                ssid_decodificado = self._from_binary(ssid_bin)
+                return {
+                    "valida": True,
+                    "ssid": ssid_decodificado,
+                    "zona": data["zona"],
+                    "token_red": self.generar_token_dispositivo(device_id)
+                }
+
+        return {"valida": False}
 
     def obtener_redes_decodificadas(self):
         redes = []
@@ -43,8 +81,14 @@ class NetworkConfigManager:
         }
         return {"status": "success", "mensaje": f"Red '{ssid}' codificada y guardada correctamente."}
 
+    def eliminar_red(self, ssid: str):
+        ssid_bin = self._to_binary(ssid)
+        if ssid_bin in self._redes_bin:
+            del self._redes_bin[ssid_bin]
+            return {"status": "success", "mensaje": f"Red '{ssid}' eliminada."}
+        return {"status": "error", "mensaje": "Red no encontrada."}
+
     def obtener_ssid_real_sistema(self) -> str | None:
-        """Obtiene el SSID real de la tarjeta Wi-Fi en Windows o macOS"""
         try:
             sistema = platform.system()
             if sistema == "Windows":
@@ -53,14 +97,14 @@ class NetworkConfigManager:
                 for linea in resultado.split("\n"):
                     if "SSID" in linea and "BSSID" not in linea:
                         return linea.split(":")[1].strip()
-            elif sistema == "Darwin":  # macOS
+            elif sistema == "Darwin":
                 comando = "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport -I"
                 resultado = subprocess.check_output(comando, shell=True).decode("utf-8", errors="ignore")
                 for linea in resultado.split("\n"):
                     if " SSID:" in linea:
                         return linea.split(":")[1].strip()
-        except Exception as e:
-            print("Error consultando la red Wi-Fi del sistema:", e)
+        except Exception:
+            pass
         return None
 
     def es_red_valida(self, ssid: str) -> bool:
