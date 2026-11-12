@@ -33,6 +33,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
+  const emailActivo = session?.user?.email || "docente.prueba@tecplayacar.edu.mx";
 
   const manejarCerrarSesion = async () => {
     await signOut({ redirect: false });
@@ -57,8 +58,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   };
 
   useEffect(() => {
-    const usuarioEmail = session?.user?.email;
-    const claveStorage = `tup_privacidad_${usuarioEmail}`;
+    const claveStorage = `tup_privacidad_${emailActivo}`;
     const aceptadoLocal = localStorage.getItem(claveStorage);
 
     if (aceptadoLocal === "true") {
@@ -82,10 +82,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       );
     }, 1000);
 
-    if (usuarioEmail) {
-      cargarDatosPerfilReal(usuarioEmail, currentFingerprint);
-      evaluarRedWifiReal(usuarioEmail, currentFingerprint, true);
-    }
+    cargarDatosPerfilReal(emailActivo, currentFingerprint);
+    evaluarRedWifiReal(emailActivo, currentFingerprint, true);
 
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -98,7 +96,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       clearInterval(timerClock);
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [session]);
+  }, [emailActivo]);
 
   const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
     try {
@@ -153,11 +151,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   };
 
   const aceptarPermisosLegales = async () => {
-    const usuarioEmail = session?.user?.email;
-    if (usuarioEmail) {
-      localStorage.setItem(`tup_privacidad_${usuarioEmail}`, "true");
-      evaluarRedWifiReal(usuarioEmail, deviceId, true);
-    }
+    localStorage.setItem(`tup_privacidad_${emailActivo}`, "true");
+    evaluarRedWifiReal(emailActivo, deviceId, true);
     setMostrarModalPermisos(false);
   };
 
@@ -171,7 +166,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: session?.user?.email,
+          email: emailActivo,
           motivo: motivoSolicitud,
           fecha_evento: fechaEvento,
           descripcion: preguntaAbierta,
@@ -327,8 +322,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
         <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold text-white">{session?.user?.name}</p>
-            <p className="text-xs text-neutral-400">{session?.user?.email}</p>
+            <p className="text-sm font-semibold text-white">{session?.user?.name || "Docente TUP"}</p>
+            <p className="text-xs text-neutral-400">{emailActivo}</p>
           </div>
 
           <div className="w-9 h-9 rounded-full overflow-hidden border border-white/20 bg-neutral-800 flex items-center justify-center text-xs font-bold text-white">
@@ -520,11 +515,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
             <div className="pt-2 flex justify-between items-center gap-2">
               <button
-                onClick={() => {
-                  if (session?.user?.email) {
-                    evaluarRedWifiReal(session.user.email, deviceId, false);
-                  }
-                }}
+                onClick={() => evaluarRedWifiReal(emailActivo, deviceId, false)}
                 disabled={verificandoRed}
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-bold rounded-xl cursor-pointer transition disabled:opacity-50"
               >

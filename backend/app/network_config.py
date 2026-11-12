@@ -1,5 +1,6 @@
 import subprocess
 import platform
+import hashlib
 
 class NetworkConfigManager:
     def __init__(self):
@@ -14,7 +15,7 @@ class NetworkConfigManager:
 
     @staticmethod
     def _to_binary(text: str) -> str:
-        return "".join(format(ord(c), '08b') for c in text)
+        return "".join(format(ord(c) & 0xFF, '08b') for c in text)
 
     @staticmethod
     def _from_binary(binary_str: str) -> str:
@@ -26,16 +27,15 @@ class NetworkConfigManager:
         if not device_id:
             return ""
         redes_activas = [ssid_bin for ssid_bin, data in self._redes_bin.items() if data["activa"]]
-        prefijo_red = redes_activas[0][:16] if redes_activas else "0000000000000000"
-        dev_bin = self._to_binary(device_id)[:24]
-        return f"TUP-TOK-{int(prefijo_red, 2):04X}-{int(dev_bin, 2):06X}"
+        prefijo_red = f"{int(redes_activas[0][:16], 2):04X}" if redes_activas else "0000"
+        dev_hash = hashlib.sha256(device_id.encode("utf-8", errors="ignore")).hexdigest()[:6].upper()
+        return f"TUP-TOK-{prefijo_red}-{dev_hash}"
 
     def validar_conexion_dispositivo(self, device_id: str, ssid_reportado: str | None = None) -> dict:
         """Valida automáticamente el token del dispositivo contra las redes institucionales codificadas"""
         if not device_id:
             return {"valida": False}
 
-        # Si el cliente/sistema reportó un SSID específico, validar que exista y esté activo
         if ssid_reportado:
             ssid_bin = self._to_binary(ssid_reportado)
             if ssid_bin in self._redes_bin and self._redes_bin[ssid_bin]["activa"]:
@@ -46,7 +46,6 @@ class NetworkConfigManager:
                     "token_red": self.generar_token_dispositivo(device_id)
                 }
 
-        # Detección automática en entorno web/nube: si el dispositivo tiene ID válido, vincular a la red institucional activa
         for ssid_bin, data in self._redes_bin.items():
             if data["activa"]:
                 ssid_decodificado = self._from_binary(ssid_bin)
