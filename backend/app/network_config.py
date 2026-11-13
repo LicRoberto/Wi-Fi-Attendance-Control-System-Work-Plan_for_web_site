@@ -1,18 +1,14 @@
 import subprocess
 import platform
 import hashlib
+from sqlalchemy.orm import Session
+from app import models
 
 class NetworkConfigManager:
-    def __init__(self):
-        # Única Red Institucional Oficial TUP codificada en binario: SSID "TUP"
-        self._redes_bin = {
-            "010101000101010101010000": {
-                "password_bin": "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001",
-                "zona": "Campus Principal TUP - Aulas",
-                "firma_red_bin": "",  # Se vincula automáticamente desde el campus sin hardcodear IPs
-                "activa": True
-            }
-        }
+    # Red Institucional Oficial TUP codificada en binario: SSID "TUP"
+    DEFAULT_SSID_BIN = "010101000101010101010000"
+    DEFAULT_PASS_BIN = "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001"
+    DEFAULT_ZONA = "Campus Principal TUP - Aulas"
 
     @staticmethod
     def _to_binary(text: str) -> str:
@@ -26,111 +22,161 @@ class NetworkConfigManager:
         return "".join(chr(int(c, 2)) for c in chars)
 
     @staticmethod
-    def _extraer_prefijo_salida(client_host: str) -> str:
-        """Extrae el bloque de salida de red (subred /24) del router sin almacenar IPs fijas en código"""
+    def _extraer_firma_enlace(client_host: str) -> str:
+        """Extrae el bloque del proveedor/enlace del campus (/16) sin hardcodear IPs"""
         if not client_host:
             return ""
         ip_limpia = client_host.split(",")[0].strip()
         partes = ip_limpia.split(".")
         if len(partes) == 4:
-            return ".".join(partes[:3])  # Subred del enlace institucional
+            return ".".join(partes[:2])  # Cubre todos los routers/APs del campus TUP
         return ip_limpia
 
-    def generar_token_dispositivo(self, device_id: str) -> str:
+    def asegurar_red_base(self, db: Session):
+        red_tup = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.ssid_bin == self.DEFAULT_SSID_BIN
+        ).first()
+        if not red_tup:
+            red_tup = models.RedInstitucional(
+                ssid_bin=self.DEFAULT_SSID_BIN,
+                password_bin=self.DEFAULT_PASS_BIN,
+                zona=self.DEFAULT_ZONA,
+                firma_red_bin="",
+                activa=True
+            )
+            db.add(red_tup)
+            db.commit()
+
+    def generar_token_dispositivo(self, device_id: str, ssid_bin: str = "") -> str:
         if not device_id:
             return ""
-        redes_activas = [ssid_bin for ssid_bin, data in self._redes_bin.items() if data["activa"]]
-        prefijo_red = f"{int(redes_activas[0][:16], 2):04X}" if redes_activas else "0000"
+        ref = ssid_bin or self.DEFAULT_SSID_BIN
+        prefijo_red = f"{int(ref[:16], 2):04X}"
         dev_hash = hashlib.sha256(device_id.encode("utf-8", errors="ignore")).hexdigest()[:6].upper()
         return f"TUP-TOK-{prefijo_red}-{dev_hash}"
 
-    def vincular_firma_actual_a_red(self, ssid: str, client_host: str) -> dict:
-        """El Admin captura la firma de la red Wi-Fi actual desde el campus con 1 clic"""
+    def vincular_firma_actual_a_red(self, db: Session, ssid: str, client_host: str) -> dict:
+        self.asegurar_red_base(db)
         ssid_bin = self._to_binary(ssid)
-        if ssid_bin not in self._redes_bin:
-            return {"status": "error", "mensaje": "Red no encontrada"}
-        
-        prefijo = self._extraer_prefijo_salida(client_host)
-        self._redes_bin[ssid_bin]["firma_red_bin"] = self._to_binary(prefijo)
-        self._redes_bin[ssid_bin]["activa"] = True
+        red = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.ssid_bin == ssid_bin
+        ).first()
+
+        if not red:
+            return {"status": "error", "mensaje": f"Red '{ssid}' no encontrada"}
+
+        firma = self._extraer_firma_enlace(client_host)
+        red.firma_red_bin = self._to_binary(firma) if firma else ""
+        red.activa = True
+        db.commit()
+
         return {
             "status": "success",
-            "mensaje": f"Red '{ssid}' vinculada exitosamente al enlace Wi-Fi actual del campus."
+            "mensaje": f"Red '{ssid}' codificada y vinculada exitosamente al enlace Wi-Fi actual."
         }
 
-    def validar_conexion_dispositivo(self, device_id: str, client_host: str = "", ssid_reportado: str | None = None) -> dict:
+    def validar_conexion_dispositivo(self, db: Session, device_id: str, client_host: str = "", ssid_reportado: str | None = None) -> dict:
+        self.asegurar_red_base(db)
         if not device_id:
             return {"valida": False, "motivo": "Dispositivo sin identificador"}
 
-        prefijo_actual = self._extraer_prefijo_salida(client_host)
-        prefijo_actual_bin = self._to_binary(prefijo_actual)
+        firma_actual = self._extraer_firma_enlace(client_host)
+        firma_actual_bin = self._to_binary(firma_actual)
 
-        for ssid_bin, data in self._redes_bin.items():
-            if not data["activa"]:
-                continue
+        redes_activas = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.activa == True
+        ).all()
 
-            ssid_decodificado = self._from_binary(ssid_bin)
-            firma_guardada = data.get("firma_red_bin", "")
+        for red in redes_activas:
+            ssid_decodificado = self._from_binary(red.ssid_bin)
 
-            # 1. Si el sistema local detectó el SSID exacto
-            if ssid_reportado and self._to_binary(ssid_reportado) == ssid_bin:
+            # 1. Coincidencia directa por SSID del sistema
+            if ssid_reportado and self._to_binary(ssid_reportado) == red.ssid_bin:
                 return {
                     "valida": True,
                     "ssid": ssid_decodificado,
-                    "zona": data["zona"],
-                    "token_red": self.generar_token_dispositivo(device_id)
+                    "zona": red.zona,
+                    "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
-            # 2. Si la red institucional ya tiene firma vinculada, exigir coincidencia real
-            if firma_guardada:
-                if prefijo_actual_bin == firma_guardada:
-                    return {
-                        "valida": True,
-                        "ssid": ssid_decodificado,
-                        "zona": data["zona"],
-                        "token_red": self.generar_token_dispositivo(device_id)
-                    }
-            else:
-                # Si aún no se ha calibrado ninguna firma desde el campus, avisar que falta calibrar
+            # 2. Si aún no tiene firma vinculada, auto-calibrar con el primer enlace válido
+            if not red.firma_red_bin and firma_actual_bin:
+                red.firma_red_bin = firma_actual_bin
+                db.commit()
                 return {
-                    "valida": False,
-                    "motivo": "Red TUP pendiente de calibrar desde el panel Admin en el campus."
+                    "valida": True,
+                    "ssid": ssid_decodificado,
+                    "zona": red.zona,
+                    "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
+                }
+
+            # 3. Validar contra la firma binaria almacenada en base de datos
+            if red.firma_red_bin and firma_actual_bin == red.firma_red_bin:
+                return {
+                    "valida": True,
+                    "ssid": ssid_decodificado,
+                    "zona": red.zona,
+                    "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
         return {
             "valida": False,
-            "motivo": "El dispositivo no está conectado a la red Wi-Fi institucional del TUP."
+            "ssid": "Red Externa / Datos Móviles",
+            "motivo": "Tu dispositivo está conectado a otra red fuera del campus TUP."
         }
 
-    def obtener_redes_decodificadas(self):
-        redes = []
-        for ssid_bin, data in self._redes_bin.items():
-            redes.append({
-                "ssid": self._from_binary(ssid_bin),
-                "password": self._from_binary(data["password_bin"]),
-                "zona": data["zona"],
-                "activa": data["activa"],
-                "calibrada": bool(data.get("firma_red_bin"))
-            })
-        return redes
+    def obtener_redes_decodificadas(self, db: Session):
+        self.asegurar_red_base(db)
+        redes = db.query(models.RedInstitucional).all()
+        return [
+            {
+                "ssid": self._from_binary(r.ssid_bin),
+                "password": self._from_binary(r.password_bin),
+                "zona": r.zona,
+                "activa": r.activa,
+                "calibrada": bool(r.firma_red_bin)
+            }
+            for r in redes
+        ]
 
-    def agregar_o_actualizar_red(self, ssid: str, password: str, zona: str, client_host: str = "", activa: bool = True):
+    def agregar_o_actualizar_red(self, db: Session, ssid: str, password: str, zona: str, client_host: str = "", activa: bool = True):
+        self.asegurar_red_base(db)
         ssid_bin = self._to_binary(ssid)
         password_bin = self._to_binary(password)
-        prefijo = self._extraer_prefijo_salida(client_host)
+        firma = self._extraer_firma_enlace(client_host)
+        firma_bin = self._to_binary(firma) if firma else ""
 
-        self._redes_bin[ssid_bin] = {
-            "password_bin": password_bin,
-            "zona": zona,
-            "firma_red_bin": self._to_binary(prefijo) if prefijo else "",
-            "activa": activa
-        }
-        return {"status": "success", "mensaje": f"Red '{ssid}' codificada y vinculada correctamente."}
+        existente = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.ssid_bin == ssid_bin
+        ).first()
 
-    def eliminar_red(self, ssid: str):
+        if existente:
+            existente.password_bin = password_bin
+            existente.zona = zona
+            if firma_bin:
+                existente.firma_red_bin = firma_bin
+            existente.activa = activa
+        else:
+            nueva = models.RedInstitucional(
+                ssid_bin=ssid_bin,
+                password_bin=password_bin,
+                zona=zona,
+                firma_red_bin=firma_bin,
+                activa=activa
+            )
+            db.add(nueva)
+
+        db.commit()
+        return {"status": "success", "mensaje": f"Red '{ssid}' codificada y guardada en base de datos."}
+
+    def eliminar_red(self, db: Session, ssid: str):
         ssid_bin = self._to_binary(ssid)
-        if ssid_bin in self._redes_bin:
-            del self._redes_bin[ssid_bin]
+        red = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.ssid_bin == ssid_bin
+        ).first()
+        if red:
+            db.delete(red)
+            db.commit()
             return {"status": "success", "mensaje": f"Red '{ssid}' eliminada."}
         return {"status": "error", "mensaje": "Red no encontrada."}
 

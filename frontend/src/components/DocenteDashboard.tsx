@@ -16,6 +16,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [redConectada, setRedConectada] = useState<boolean>(false);
   const [verificandoRed, setVerificandoRed] = useState<boolean>(false);
   const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
+  const [ssidDetectado, setSsidDetectado] = useState<string>("Verificando...");
+  const [tokenRed, setTokenRed] = useState<string>("Pendiente");
   const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(10);
   const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
 
@@ -104,6 +106,9 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       if (res.ok) {
         const data = await res.json();
         setDeviceId(data.mac_address || fingerprint);
+        if (data.token_red) {
+          setTokenRed(data.token_red);
+        }
       }
     } catch (err) {
       console.error("Error al obtener perfil", err);
@@ -120,7 +125,10 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       });
       if (res.ok) {
         const data = await res.json();
-        setRedConectada(Boolean(data.red_activa));
+        const activa = Boolean(data.red_activa);
+        setRedConectada(activa);
+        setSsidDetectado(data.ssid_actual || (activa ? "TUP" : "Red Externa"));
+        setTokenRed(data.token_red || "Sin token (Fuera de red)");
         if (data.zona) {
           setAulaAsignada(data.zona);
         }
@@ -129,6 +137,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         setTimeout(() => evaluarRedWifiReal(email, fingerprint, false), 5000);
       } else {
         setRedConectada(false);
+        setSsidDetectado("Sin conexión");
         setVerificandoRed(false);
       }
     } catch (err) {
@@ -136,6 +145,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         setTimeout(() => evaluarRedWifiReal(email, fingerprint, false), 5000);
       } else {
         setRedConectada(false);
+        setSsidDetectado("Sin conexión");
         setVerificandoRed(false);
       }
     }
@@ -316,7 +326,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               : "border-rose-500/40 bg-rose-950/40 text-rose-300"
           }`}>
             <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-            <span>TUP-WIFI: {verificandoRed ? "Verificando..." : redConectada ? "Activa" : "Desactivada"}</span>
+            <span>TUP-WIFI: {verificandoRed ? "Verificando..." : redConectada ? `Activa (${ssidDetectado})` : "Desactivada"}</span>
           </div>
         </div>
 
@@ -495,6 +505,16 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
 
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Red Wi-Fi Detectada:</span>
+                <span className="font-mono font-bold text-white">{ssidDetectado}</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Token de Red Codificado:</span>
+                <span className="font-mono font-bold text-cyan-300">{tokenRed}</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
                 <span className="text-neutral-400">Aula / Zona Asignada:</span>
                 <span className="font-bold text-neutral-300">{aulaAsignada}</span>
               </div>
@@ -508,7 +528,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 <span className="text-neutral-400">Estado de Conexión:</span>
                 <span className={`font-bold flex items-center gap-1.5 ${redConectada ? "text-emerald-400" : "text-rose-400"}`}>
                   <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-                  {verificandoRed ? "Verificando..." : redConectada ? "Conectado a Red TUP" : "Fuera de Red TUP"}
+                  {verificandoRed ? "Verificando..." : redConectada ? `Conectado a Red ${ssidDetectado}` : "Fuera de Red TUP"}
                 </span>
               </div>
             </div>

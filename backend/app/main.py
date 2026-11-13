@@ -207,6 +207,7 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
     origen_cliente = _obtener_origen_cliente(request)
     ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
     red_activa_info = network_manager.validar_conexion_dispositivo(
+        db=db,
         device_id=dispositivo_id,
         client_host=origen_cliente,
         ssid_reportado=ssid_detectado
@@ -217,7 +218,7 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             "status": "red_invalida",
             "mensaje": red_activa_info.get("motivo", "Fuera de la red Wi-Fi institucional del TUP."),
             "red_activa": False,
-            "ssid_actual": None
+            "ssid_actual": red_activa_info.get("ssid", "Red Externa")
         }
 
     ssid_final = red_activa_info["ssid"]
@@ -304,13 +305,14 @@ def obtener_todas_asistencias(db: Session = Depends(get_db)):
     return resultado
 
 @app.get("/api/admin/redes-wifi")
-def listar_redes_wifi():
-    return network_manager.obtener_redes_decodificadas()
+def listar_redes_wifi(db: Session = Depends(get_db)):
+    return network_manager.obtener_redes_decodificadas(db)
 
 @app.post("/api/admin/redes-wifi")
-def registrar_red_wifi(datos: RedWifiCreate, request: Request):
+def registrar_red_wifi(datos: RedWifiCreate, request: Request, db: Session = Depends(get_db)):
     origen_cliente = _obtener_origen_cliente(request)
     return network_manager.agregar_o_actualizar_red(
+        db=db,
         ssid=datos.ssid,
         password=datos.password,
         zona=datos.zona,
@@ -318,10 +320,10 @@ def registrar_red_wifi(datos: RedWifiCreate, request: Request):
     )
 
 @app.post("/api/admin/redes-wifi/{ssid}/calibrar")
-def calibrar_red_wifi(ssid: str, request: Request):
+def calibrar_red_wifi(ssid: str, request: Request, db: Session = Depends(get_db)):
     origen_cliente = _obtener_origen_cliente(request)
-    return network_manager.vincular_firma_actual_a_red(ssid=ssid, client_host=origen_cliente)
+    return network_manager.vincular_firma_actual_a_red(db=db, ssid=ssid, client_host=origen_cliente)
 
 @app.delete("/api/admin/redes-wifi/{ssid}")
-def eliminar_red_wifi(ssid: str):
-    return network_manager.eliminar_red(ssid)
+def eliminar_red_wifi(ssid: str, db: Session = Depends(get_db)):
+    return network_manager.eliminar_red(db=db, ssid=ssid)
