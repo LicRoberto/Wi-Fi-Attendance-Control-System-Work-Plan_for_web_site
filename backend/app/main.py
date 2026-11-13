@@ -41,6 +41,10 @@ class RedWifiCreate(BaseModel):
     password: str
     zona: str
 
+class CalibrarRedRequest(BaseModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
 class LoginEmpleadoRequest(BaseModel):
     numero_empleado: str
     password: str
@@ -55,6 +59,8 @@ class AutoMarcacionRequest(BaseModel):
     email: str
     ssid_actual: Optional[str] = None
     device_fingerprint: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
 
 @app.get("/")
 def home():
@@ -205,12 +211,13 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
         db.commit()
 
     origen_cliente = _obtener_origen_cliente(request)
-    ssid_detectado = datos.ssid_actual or network_manager.obtener_ssid_real_sistema()
     red_activa_info = network_manager.validar_conexion_dispositivo(
         db=db,
         device_id=dispositivo_id,
         client_host=origen_cliente,
-        ssid_reportado=ssid_detectado
+        ssid_reportado=datos.ssid_actual,
+        lat=datos.lat,
+        lon=datos.lon,
     )
 
     if not red_activa_info["valida"]:
@@ -320,9 +327,15 @@ def registrar_red_wifi(datos: RedWifiCreate, request: Request, db: Session = Dep
     )
 
 @app.post("/api/admin/redes-wifi/{ssid}/calibrar")
-def calibrar_red_wifi(ssid: str, request: Request, db: Session = Depends(get_db)):
+def calibrar_red_wifi(ssid: str, request: Request, datos: Optional[CalibrarRedRequest] = None, db: Session = Depends(get_db)):
     origen_cliente = _obtener_origen_cliente(request)
-    return network_manager.vincular_firma_actual_a_red(db=db, ssid=ssid, client_host=origen_cliente)
+    return network_manager.vincular_firma_actual_a_red(
+        db=db,
+        ssid=ssid,
+        client_host=origen_cliente,
+        lat=datos.lat if datos else None,
+        lon=datos.lon if datos else None,
+    )
 
 @app.delete("/api/admin/redes-wifi/{ssid}")
 def eliminar_red_wifi(ssid: str, db: Session = Depends(get_db)):

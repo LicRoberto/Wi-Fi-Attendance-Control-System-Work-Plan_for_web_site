@@ -1,5 +1,4 @@
-import subprocess
-import platform
+import math
 import hashlib
 from sqlalchemy.orm import Session
 from app import models
@@ -8,7 +7,7 @@ class NetworkConfigManager:
     # Red Institucional Oficial TUP codificada en binario: SSID "TUP"
     DEFAULT_SSID_BIN = "010101000101010101010000"
     DEFAULT_PASS_BIN = "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001"
-    DEFAULT_ZONA = "Campus Principal TUP - Aulas"
+    DEFAULT_ZONA = "Campus Principal TUP - Playacar"
 
     @staticmethod
     def _to_binary(text: str) -> str:
@@ -23,14 +22,22 @@ class NetworkConfigManager:
 
     @staticmethod
     def _extraer_firma_enlace(client_host: str) -> str:
-        """Extrae el bloque del proveedor/enlace del campus (/16) sin hardcodear IPs"""
         if not client_host:
             return ""
         ip_limpia = client_host.split(",")[0].strip()
         partes = ip_limpia.split(".")
         if len(partes) == 4:
-            return ".".join(partes[:2])  # Cubre todos los routers/APs del campus TUP
+            return ".".join(partes[:2])
         return ip_limpia
+
+    @staticmethod
+    def _distancia_metros(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        r = 6371000
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     def asegurar_red_base(self, db: Session):
         red_tup = db.query(models.RedInstitucional).filter(
@@ -55,7 +62,9 @@ class NetworkConfigManager:
         dev_hash = hashlib.sha256(device_id.encode("utf-8", errors="ignore")).hexdigest()[:6].upper()
         return f"TUP-TOK-{prefijo_red}-{dev_hash}"
 
-    def vincular_firma_actual_a_red(self, db: Session, ssid: str, client_host: str) -> dict:
+    def vincular_firma_actual_a_red(
+        self, db: Session, ssid: str, client_host: str, lat: float | None = None, lon: float | None = None
+    ) -> dict:
         self.asegurar_red_base(db)
         ssid_bin = self._to_binary(ssid)
         red = db.query(models.RedInstitucional).filter(
@@ -66,42 +75,45 @@ class NetworkConfigManager:
             return {"status": "error", "mensaje": f"Red '{ssid}' no encontrada"}
 
         firma = self._extraer_firma_enlace(client_host)
+        if lat is not None and lon is not None:
+            firma = f"{firma}|GEO:{lat:.5f},{lon:.5f}"
+
         red.firma_red_bin = self._to_binary(firma) if firma else ""
         red.activa = True
         db.commit()
 
+        geo_msg = " + Perímetro GPS del campus" if (lat is not None and lon is not None) else ""
         return {
             "status": "success",
-            "mensaje": f"Red '{ssid}' codificada y vinculada exitosamente al enlace Wi-Fi actual."
+            "mensaje": f"Red '{ssid}' vinculada exitosamente al enlace Wi-Fi actual{geo_msg}."
         }
 
-    def validar_conexion_dispositivo(self, db: Session, device_id: str, client_host: str = "", ssid_reportado: str | None = None) -> dict:
+    def validar_conexion_dispositivo(
+        self,
+        db: Session,
+        device_id: str,
+        client_host: str = "",
+        ssid_reportado: str | None = None,
+        lat: float | None = None,
+        lon: float | None = None,
+    ) -> dict:
         self.asegurar_red_base(db)
         if not device_id:
             return {"valida": False, "motivo": "Dispositivo sin identificador"}
 
         firma_actual = self._extraer_firma_enlace(client_host)
-        firma_actual_bin = self._to_binary(firma_actual)
-
         redes_activas = db.query(models.RedInstitucional).filter(
             models.RedInstitucional.activa == True
         ).all()
 
         for red in redes_activas:
             ssid_decodificado = self._from_binary(red.ssid_bin)
+            firma_guardada_txt = self._from_binary(red.firma_red_bin)
 
-            # 1. Coincidencia directa por SSID del sistema
-            if ssid_reportado and self._to_binary(ssid_reportado) == red.ssid_bin:
-                return {
-                    "valida": True,
-                    "ssid": ssid_decodificado,
-                    "zona": red.zona,
-                    "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
-                }
-
-            # 2. Si aún no tiene firma vinculada, auto-calibrar con el primer enlace válido
-            if not red.firma_red_bin and firma_actual_bin:
-                red.firma_red_bin = firma_actual_bin
+            # Si aún no está calibrada, se vincula automáticamente la primera vez
+            if not firma_guardada_txt and firma_actual:
+                nueva_firma = f"{firma_actual}|GEO:{lat:.5f},{lon:.5f}" if (lat and lon) else firma_actual
+                red.firma_red_bin = self._to_binary(nueva_firma)
                 db.commit()
                 return {
                     "valida": True,
@@ -110,8 +122,12 @@ class NetworkConfigManager:
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
-            # 3. Validar contra la firma binaria almacenada en base de datos
-            if red.firma_red_bin and firma_actual_bin == red.firma_red_bin:
+            partes_firma = firma_guardada_txt.split("|GEO:")
+            ip_guardada = partes_firma[0]
+            geo_guardada = partes_firma[1] if len(partes_firma) > 1 else None
+
+            # 1. Validación por Enlace de Red Wi-Fi del Campus
+            if ip_guardada and firma_actual == ip_guardada:
                 return {
                     "valida": True,
                     "ssid": ssid_decodificado,
@@ -119,10 +135,21 @@ class NetworkConfigManager:
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
+            # 2. Validación por Perímetro Campus TUP (radio 250m) si cambió la IP del ISP
+            if geo_guardada and lat is not None and lon is not None:
+                g_lat, g_lon = map(float, geo_guardada.split(","))
+                if self._distancia_metros(lat, lon, g_lat, g_lon) <= 250:
+                    return {
+                        "valida": True,
+                        "ssid": ssid_decodificado,
+                        "zona": red.zona,
+                        "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
+                    }
+
         return {
             "valida": False,
-            "ssid": "Red Externa / Datos Móviles",
-            "motivo": "Tu dispositivo está conectado a otra red fuera del campus TUP."
+            "ssid": "Red Externa",
+            "motivo": "Tu dispositivo no está conectado a la red Wi-Fi del campus TUP."
         }
 
     def obtener_redes_decodificadas(self, db: Session):
@@ -139,7 +166,9 @@ class NetworkConfigManager:
             for r in redes
         ]
 
-    def agregar_o_actualizar_red(self, db: Session, ssid: str, password: str, zona: str, client_host: str = "", activa: bool = True):
+    def agregar_o_actualizar_red(
+        self, db: Session, ssid: str, password: str, zona: str, client_host: str = "", activa: bool = True
+    ):
         self.asegurar_red_base(db)
         ssid_bin = self._to_binary(ssid)
         password_bin = self._to_binary(password)
@@ -167,7 +196,7 @@ class NetworkConfigManager:
             db.add(nueva)
 
         db.commit()
-        return {"status": "success", "mensaje": f"Red '{ssid}' codificada y guardada en base de datos."}
+        return {"status": "success", "mensaje": f"Red '{ssid}' codificada y guardada."}
 
     def eliminar_red(self, db: Session, ssid: str):
         ssid_bin = self._to_binary(ssid)
@@ -179,24 +208,5 @@ class NetworkConfigManager:
             db.commit()
             return {"status": "success", "mensaje": f"Red '{ssid}' eliminada."}
         return {"status": "error", "mensaje": "Red no encontrada."}
-
-    def obtener_ssid_real_sistema(self) -> str | None:
-        try:
-            sistema = platform.system()
-            if sistema == "Windows":
-                comando = "netsh wlan show interfaces"
-                resultado = subprocess.check_output(comando, shell=True).decode("utf-8", errors="ignore")
-                for linea in resultado.split("\n"):
-                    if "SSID" in linea and "BSSID" not in linea:
-                        return linea.split(":")[1].strip()
-            elif sistema == "Darwin":
-                comando = "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport -I"
-                resultado = subprocess.check_output(comando, shell=True).decode("utf-8", errors="ignore")
-                for linea in resultado.split("\n"):
-                    if " SSID:" in linea:
-                        return linea.split(":")[1].strip()
-        except Exception:
-            pass
-        return None
 
 network_manager = NetworkConfigManager()

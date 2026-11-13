@@ -105,8 +105,22 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const handleCalibrarRed = async (ssid: string) => {
     setCalibrandoSsid(ssid);
     try {
+      const coords = await new Promise<{ lat: number; lon: number } | null>((resolve) => {
+        if (!("geolocation" in navigator)) return resolve(null);
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 4000 }
+        );
+      });
+
       const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}/calibrar`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: coords?.lat ?? null,
+          lon: coords?.lon ?? null,
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -402,7 +416,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-bold text-slate-900">Redes Wi-Fi Autorizadas</h3>
-                  <p className="text-xs text-slate-500">Conéctate al Wi-Fi del campus y vincula la firma de red con 1 clic.</p>
+                  <p className="text-xs text-slate-500">Conéctate al Wi-Fi del campus y vincula la firma de red + perímetro con 1 clic.</p>
                 </div>
                 <button
                   onClick={cargarRedesWifi}

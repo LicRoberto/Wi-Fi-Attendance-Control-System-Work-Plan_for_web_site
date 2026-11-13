@@ -59,6 +59,17 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     return devId;
   };
 
+  const obtenerUbicacionBrowser = (): Promise<{ lat: number; lon: number } | null> => {
+    return new Promise((resolve) => {
+      if (!("geolocation" in navigator)) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 4000 }
+      );
+    });
+  };
+
   useEffect(() => {
     const claveStorage = `tup_privacidad_${emailActivo}`;
     const aceptadoLocal = localStorage.getItem(claveStorage);
@@ -118,10 +129,16 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const evaluarRedWifiReal = async (email: string, fingerprint: string, reintento = true) => {
     setVerificandoRed(true);
     try {
+      const coords = await obtenerUbicacionBrowser();
       const res = await fetch(`${API_URL}/api/asistencias/auto-marcar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, device_fingerprint: fingerprint }),
+        body: JSON.stringify({
+          email,
+          device_fingerprint: fingerprint,
+          lat: coords?.lat ?? null,
+          lon: coords?.lon ?? null,
+        }),
       });
       if (res.ok) {
         const data = await res.json();
