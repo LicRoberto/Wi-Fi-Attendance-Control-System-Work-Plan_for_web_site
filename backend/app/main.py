@@ -129,7 +129,7 @@ def obtener_perfil(
         usuario = db.query(models.Usuario).filter(models.Usuario.numero_empleado == num_empleado).first()
         if not usuario and num_empleado.upper() == "DOC-2026-01":
             email = "docente.prueba@tecplayacar.edu.mx"
-            usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
+            usuario = db.query(models.Usuario.email == email).first()
 
     if not usuario and not email:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -312,8 +312,9 @@ def obtener_todas_asistencias(db: Session = Depends(get_db)):
     return resultado
 
 @app.get("/api/admin/redes-wifi")
-def listar_redes_wifi(db: Session = Depends(get_db)):
-    return network_manager.obtener_redes_decodificadas(db)
+def listar_redes_wifi(request: Request, db: Session = Depends(get_db)):
+    origen_cliente = _obtener_origen_cliente(request)
+    return network_manager.obtener_redes_decodificadas(db, client_host=origen_cliente)
 
 @app.post("/api/admin/redes-wifi")
 def registrar_red_wifi(datos: RedWifiCreate, request: Request, db: Session = Depends(get_db)):
@@ -336,6 +337,10 @@ def calibrar_red_wifi(ssid: str, request: Request, datos: Optional[CalibrarRedRe
         lat=datos.lat if datos else None,
         lon=datos.lon if datos else None,
     )
+
+@app.post("/api/admin/redes-wifi/{ssid}/reset")
+def resetear_red_wifi(ssid: str, db: Session = Depends(get_db)):
+    return network_manager.limpiar_vinculacion_red(db=db, ssid=ssid)
 
 @app.delete("/api/admin/redes-wifi/{ssid}")
 def eliminar_red_wifi(ssid: str, db: Session = Depends(get_db)):

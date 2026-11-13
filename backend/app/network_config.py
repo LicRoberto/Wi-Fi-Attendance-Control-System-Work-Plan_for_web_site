@@ -27,7 +27,8 @@ class NetworkConfigManager:
         ip_limpia = client_host.split(",")[0].strip()
         partes = ip_limpia.split(".")
         if len(partes) == 4:
-            return ".".join(partes[:2])
+            # Bloque /24 (primeros 3 octetos) para distinguir redes distintas del mismo proveedor
+            return ".".join(partes[:3])
         return ip_limpia
 
     @staticmethod
@@ -62,6 +63,14 @@ class NetworkConfigManager:
         dev_hash = hashlib.sha256(device_id.encode("utf-8", errors="ignore")).hexdigest()[:6].upper()
         return f"TUP-TOK-{prefijo_red}-{dev_hash}"
 
+    def _parsear_firmas_guardadas(self, firma_txt: str) -> tuple[list[str], str | None]:
+        if not firma_txt:
+            return [], None
+        partes = firma_txt.split("|GEO:")
+        ips = [ip.strip() for ip in partes[0].split(";") if ip.strip()]
+        geo = partes[1].strip() if len(partes) > 1 and partes[1].strip() else None
+        return ips, geo
+
     def vincular_firma_actual_a_red(
         self, db: Session, ssid: str, client_host: str, lat: float | None = None, lon: float | None = None
     ) -> dict:
@@ -74,19 +83,38 @@ class NetworkConfigManager:
         if not red:
             return {"status": "error", "mensaje": f"Red '{ssid}' no encontrada"}
 
-        firma = self._extraer_firma_enlace(client_host)
-        if lat is not None and lon is not None:
-            firma = f"{firma}|GEO:{lat:.5f},{lon:.5f}"
+        firma_nueva = self._extraer_firma_enlace(client_host)
+        ips_existentes, geo_existente = self._parsear_firmas_guardadas(self._from_binary(red.firma_red_bin))
 
-        red.firma_red_bin = self._to_binary(firma) if firma else ""
+        if firma_nueva and firma_nueva not in ips_existentes:
+            ips_existentes.append(firma_nueva)
+
+        geo_final = f"{lat:.5f},{lon:.5f}" if (lat is not None and lon is not None) else geo_existente
+        serializado = ";".join(ips_existentes)
+        if geo_final:
+            serializado = f"{serializado}|GEO:{geo_final}"
+
+        red.firma_red_bin = self._to_binary(serializado) if serializado else ""
         red.activa = True
         db.commit()
 
-        geo_msg = " + Perímetro GPS del campus" if (lat is not None and lon is not None) else ""
         return {
             "status": "success",
-            "mensaje": f"Red '{ssid}' vinculada exitosamente al enlace Wi-Fi actual{geo_msg}."
+            "mensaje": f"Enlace '{firma_nueva}' agregado a '{ssid}'. Total enlaces vinculados: {len(ips_existentes)}.",
+            "enlaces_vinculados": ips_existentes,
+            "firma_detectada": firma_nueva
         }
+
+    def limpiar_vinculacion_red(self, db: Session, ssid: str) -> dict:
+        ssid_bin = self._to_binary(ssid)
+        red = db.query(models.RedInstitucional).filter(
+            models.RedInstitucional.ssid_bin == ssid_bin
+        ).first()
+        if not red:
+            return {"status": "error", "mensaje": "Red no encontrada"}
+        red.firma_red_bin = ""
+        db.commit()
+        return {"status": "success", "mensaje": f"Vinculación de '{ssid}' reiniciada. Ahora requiere calibración en el campus."}
 
     def validar_conexion_dispositivo(
         self,
@@ -106,32 +134,26 @@ class NetworkConfigManager:
             models.RedInstitucional.activa == True
         ).all()
 
+        alguna_calibrada = False
+
         for red in redes_activas:
             ssid_decodificado = self._from_binary(red.ssid_bin)
             firma_guardada_txt = self._from_binary(red.firma_red_bin)
+            ips_guardadas, geo_guardada = self._parsear_firmas_guardadas(firma_guardada_txt)
 
-            # Si aún no está calibrada, se vincula automáticamente la primera vez
-            if not firma_guardada_txt and firma_actual:
-                nueva_firma = f"{firma_actual}|GEO:{lat:.5f},{lon:.5f}" if (lat and lon) else firma_actual
-                red.firma_red_bin = self._to_binary(nueva_firma)
-                db.commit()
+            # NO se auto-vincula sola: si no está calibrada, se ignora hasta que Admin la vincule
+            if not ips_guardadas and not geo_guardada:
+                continue
+
+            alguna_calibrada = True
+
+            # 1. Validación exacta contra cualquiera de los enlaces/subredes vinculados del TUP
+            if firma_actual and firma_actual in ips_guardadas:
                 return {
                     "valida": True,
                     "ssid": ssid_decodificado,
                     "zona": red.zona,
-                    "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
-                }
-
-            partes_firma = firma_guardada_txt.split("|GEO:")
-            ip_guardada = partes_firma[0]
-            geo_guardada = partes_firma[1] if len(partes_firma) > 1 else None
-
-            # 1. Validación por Enlace de Red Wi-Fi del Campus
-            if ip_guardada and firma_actual == ip_guardada:
-                return {
-                    "valida": True,
-                    "ssid": ssid_decodificado,
-                    "zona": red.zona,
+                    "firma_actual": firma_actual,
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
@@ -143,28 +165,44 @@ class NetworkConfigManager:
                         "valida": True,
                         "ssid": ssid_decodificado,
                         "zona": red.zona,
+                        "firma_actual": firma_actual,
                         "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                     }
+
+        if not alguna_calibrada:
+            return {
+                "valida": False,
+                "ssid": "Sin calibrar",
+                "firma_actual": firma_actual,
+                "motivo": "Ninguna red TUP ha sido calibrada aún por el Administrador."
+            }
 
         return {
             "valida": False,
             "ssid": "Red Externa",
-            "motivo": "Tu dispositivo no está conectado a la red Wi-Fi del campus TUP."
+            "firma_actual": firma_actual,
+            "motivo": f"Subred actual ({firma_actual}) no coincide con los enlaces vinculados del campus TUP."
         }
 
-    def obtener_redes_decodificadas(self, db: Session):
+    def obtener_redes_decodificadas(self, db: Session, client_host: str = ""):
         self.asegurar_red_base(db)
+        firma_actual = self._extraer_firma_enlace(client_host)
         redes = db.query(models.RedInstitucional).all()
-        return [
-            {
+        resultado = []
+        for r in redes:
+            ips, geo = self._parsear_firmas_guardadas(self._from_binary(r.firma_red_bin))
+            resultado.append({
                 "ssid": self._from_binary(r.ssid_bin),
                 "password": self._from_binary(r.password_bin),
                 "zona": r.zona,
                 "activa": r.activa,
-                "calibrada": bool(r.firma_red_bin)
-            }
-            for r in redes
-        ]
+                "calibrada": bool(ips or geo),
+                "enlaces_vinculados": ips,
+                "tiene_geo": bool(geo),
+                "firma_actual_cliente": firma_actual,
+                "coincide_actual": firma_actual in ips if firma_actual else False
+            })
+        return resultado
 
     def agregar_o_actualizar_red(
         self, db: Session, ssid: str, password: str, zona: str, client_host: str = "", activa: bool = True

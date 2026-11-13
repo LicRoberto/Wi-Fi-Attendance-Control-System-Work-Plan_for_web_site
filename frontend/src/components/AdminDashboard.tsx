@@ -19,6 +19,10 @@ interface RedWifi {
   zona: string;
   activa: boolean;
   calibrada?: boolean;
+  enlaces_vinculados?: string[];
+  tiene_geo?: boolean;
+  firma_actual_cliente?: string;
+  coincide_actual?: boolean;
 }
 
 interface AdminDashboardProps {
@@ -131,6 +135,21 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       console.error("Error al calibrar red Wi-Fi", err);
     } finally {
       setCalibrandoSsid(null);
+    }
+  };
+
+  const handleResetRed = async (ssid: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}/reset`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.mensaje);
+        await cargarRedesWifi();
+      }
+    } catch (err) {
+      console.error("Error al reiniciar vinculación", err);
     }
   };
 
@@ -416,7 +435,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-bold text-slate-900">Redes Wi-Fi Autorizadas</h3>
-                  <p className="text-xs text-slate-500">Conéctate al Wi-Fi del campus y vincula la firma de red + perímetro con 1 clic.</p>
+                  <p className="text-xs text-slate-500">Conéctate al Wi-Fi del campus y vincula cada enlace oficial con 1 clic.</p>
                 </div>
                 <button
                   onClick={cargarRedesWifi}
@@ -434,32 +453,45 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                   >
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`w-2.5 h-2.5 rounded-full ${red.calibrada ? "bg-emerald-500" : "bg-amber-500"}`}></span>
+                        <span className={`w-2.5 h-2.5 rounded-full ${red.coincide_actual ? "bg-emerald-500" : "bg-rose-500"}`}></span>
                         <span className="font-bold text-sm text-slate-900">{red.ssid}</span>
                         <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
-                          red.calibrada
+                          red.coincide_actual
                             ? "bg-emerald-100 text-emerald-800"
-                            : "bg-amber-100 text-amber-800"
+                            : "bg-rose-100 text-rose-800"
                         }`}>
-                          {red.calibrada ? "ENLACE VINCULADO" : "PENDIENTE DE VINCULAR"}
+                          {red.coincide_actual ? "CONECTADO A ESTE ENLACE" : "TU RED ACTUAL NO COINCIDE"}
                         </span>
                       </div>
                       <p className="text-xs text-slate-600 mt-1">{red.zona}</p>
-                      <p className="text-[11px] font-mono text-slate-400 mt-0.5">Clave: {red.password}</p>
+                      <p className="text-[11px] font-mono text-slate-500 mt-1">
+                        Tu subred actual: <strong className="text-slate-800">{red.firma_actual_cliente || "N/A"}</strong> | Vinculadas:{" "}
+                        <strong className="text-emerald-700">
+                          {red.enlaces_vinculados && red.enlaces_vinculados.length > 0
+                            ? red.enlaces_vinculados.join(", ")
+                            : "Ninguna"}
+                        </strong>
+                        {red.tiene_geo ? " (+ GPS Campus)" : ""}
+                      </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
                         onClick={() => handleCalibrarRed(red.ssid)}
                         disabled={calibrandoSsid === red.ssid}
                         className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition cursor-pointer disabled:opacity-50"
                       >
-                        {calibrandoSsid === red.ssid
-                          ? "Vinculando..."
-                          : red.calibrada
-                          ? "Re-vincular Wi-Fi actual"
-                          : "Vincular con mi Wi-Fi actual"}
+                        {calibrandoSsid === red.ssid ? "Vinculando..." : "+ Vincular mi red actual"}
                       </button>
+
+                      {red.calibrada && (
+                        <button
+                          onClick={() => handleResetRed(red.ssid)}
+                          className="px-3 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition cursor-pointer"
+                        >
+                          Limpiar enlaces
+                        </button>
+                      )}
 
                       {red.ssid !== "TUP" && (
                         <button
