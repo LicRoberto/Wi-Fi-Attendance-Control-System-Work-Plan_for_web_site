@@ -31,9 +31,10 @@ def _get_admin_email() -> str:
     return "".join(chr(int(c, 2)) for c in chars)
 
 def _obtener_origen_cliente(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        valor = request.headers.get(header)
+        if valor:
+            return valor.split(",")[0].strip()
     return request.client.host if request.client else ""
 
 class RedWifiCreate(BaseModel):
@@ -129,7 +130,7 @@ def obtener_perfil(
         usuario = db.query(models.Usuario).filter(models.Usuario.numero_empleado == num_empleado).first()
         if not usuario and num_empleado.upper() == "DOC-2026-01":
             email = "docente.prueba@tecplayacar.edu.mx"
-            usuario = db.query(models.Usuario.email == email).first()
+            usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
 
     if not usuario and not email:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
