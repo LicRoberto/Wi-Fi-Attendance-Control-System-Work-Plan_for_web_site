@@ -24,10 +24,14 @@ class NetworkConfigManager:
     def _extraer_firma_enlace(client_host: str) -> str:
         if not client_host:
             return ""
-        ip_limpia = client_host.split(",")[0].strip()
+        ip_limpia = client_host.split(",")[0].strip().lower()
+        if ":" in ip_limpia:
+            # Prefijo /48 en IPv6 compartido por todos los dispositivos del mismo router institucional
+            bloques = [b for b in ip_limpia.split(":") if b]
+            return ":".join(bloques[:3])
         partes = ip_limpia.split(".")
         if len(partes) == 4:
-            # Bloque /24 (primeros 3 octetos) para distinguir redes distintas del mismo proveedor
+            # Prefijo /24 en IPv4
             return ".".join(partes[:3])
         return ip_limpia
 
@@ -98,9 +102,10 @@ class NetworkConfigManager:
         red.activa = True
         db.commit()
 
+        geo_estado = f" + GPS ({geo_final})" if geo_final else " (Sin GPS)"
         return {
             "status": "success",
-            "mensaje": f"Enlace '{firma_nueva}' agregado a '{ssid}'. Total enlaces vinculados: {len(ips_existentes)}.",
+            "mensaje": f"Enlace '{firma_nueva}' guardado en '{ssid}'{geo_estado}.",
             "enlaces_vinculados": ips_existentes,
             "firma_detectada": firma_nueva
         }
@@ -114,7 +119,7 @@ class NetworkConfigManager:
             return {"status": "error", "mensaje": "Red no encontrada"}
         red.firma_red_bin = ""
         db.commit()
-        return {"status": "success", "mensaje": f"Vinculación de '{ssid}' reiniciada. Ahora requiere calibración en el campus."}
+        return {"status": "success", "mensaje": f"Enlaces de '{ssid}' borrados. Requiere vinculación en el campus."}
 
     def validar_conexion_dispositivo(
         self,
@@ -141,31 +146,33 @@ class NetworkConfigManager:
             firma_guardada_txt = self._from_binary(red.firma_red_bin)
             ips_guardadas, geo_guardada = self._parsear_firmas_guardadas(firma_guardada_txt)
 
-            # NO se auto-vincula sola: si no está calibrada, se ignora hasta que Admin la vincule
             if not ips_guardadas and not geo_guardada:
                 continue
 
             alguna_calibrada = True
 
-            # 1. Validación exacta contra cualquiera de los enlaces/subredes vinculados del TUP
+            # 1. Validación por Subred / Prefijo IPv4 o IPv6 del Router Institucional
             if firma_actual and firma_actual in ips_guardadas:
                 return {
                     "valida": True,
                     "ssid": ssid_decodificado,
                     "zona": red.zona,
                     "firma_actual": firma_actual,
+                    "metodo_validacion": "SUBRED_WIFI",
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
-            # 2. Validación por Perímetro Campus TUP (radio 250m) si cambió la IP del ISP
+            # 2. Validación por Perímetro GPS del Campus TUP (radio 250 m)
             if geo_guardada and lat is not None and lon is not None:
                 g_lat, g_lon = map(float, geo_guardada.split(","))
-                if self._distancia_metros(lat, lon, g_lat, g_lon) <= 250:
+                distancia = self._distancia_metros(lat, lon, g_lat, g_lon)
+                if distancia <= 250:
                     return {
                         "valida": True,
                         "ssid": ssid_decodificado,
                         "zona": red.zona,
                         "firma_actual": firma_actual,
+                        "metodo_validacion": f"CAMPUS_GPS_{int(distancia)}M",
                         "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                     }
 
@@ -174,14 +181,14 @@ class NetworkConfigManager:
                 "valida": False,
                 "ssid": "Sin calibrar",
                 "firma_actual": firma_actual,
-                "motivo": "Ninguna red TUP ha sido calibrada aún por el Administrador."
+                "motivo": "El Administrador aún no ha vinculado la red del campus."
             }
 
         return {
             "valida": False,
             "ssid": "Red Externa",
             "firma_actual": firma_actual,
-            "motivo": f"Subred actual ({firma_actual}) no coincide con los enlaces vinculados del campus TUP."
+            "motivo": f"Fuera de la red del campus TUP (Firma detectada: {firma_actual})."
         }
 
     def obtener_redes_decodificadas(self, db: Session, client_host: str = ""):
