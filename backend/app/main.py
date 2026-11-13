@@ -45,6 +45,7 @@ class RedWifiCreate(BaseModel):
 class CalibrarRedRequest(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
+    radio_metros: Optional[int] = 120
 
 class LoginEmpleadoRequest(BaseModel):
     numero_empleado: str
@@ -204,7 +205,8 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             "status": "sin_dispositivo",
             "mensaje": "Dispositivo aún no vinculado.",
             "red_activa": False,
-            "ssid_actual": None
+            "ssid_actual": None,
+            "distancia_metros": None
         }
 
     if datos.device_fingerprint and usuario.mac_address != datos.device_fingerprint:
@@ -226,11 +228,14 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             "status": "red_invalida",
             "mensaje": red_activa_info.get("motivo", "Fuera de la red Wi-Fi institucional del TUP."),
             "red_activa": False,
-            "ssid_actual": red_activa_info.get("ssid", "Red Externa")
+            "ssid_actual": red_activa_info.get("ssid", "Fuera de Campus"),
+            "distancia_metros": red_activa_info.get("distancia_metros")
         }
 
     ssid_final = red_activa_info["ssid"]
     token_red = red_activa_info["token_red"]
+    distancia_metros = red_activa_info.get("distancia_metros")
+    metodo_val = red_activa_info.get("metodo_validacion", f"TOKEN_WIFI_{ssid_final}")
     ahora = datetime.now()
     hoy_str = ahora.strftime("%Y-%m-%d")
 
@@ -245,7 +250,7 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
             usuario_id=usuario.id,
             fecha_hora=ahora,
             ip_origen=dispositivo_id,
-            metodo=f"TOKEN_WIFI_{ssid_final}",
+            metodo=metodo_val,
             estado="PRESENTE"
         )
         db.add(nueva_asistencia)
@@ -263,21 +268,23 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
 
         return {
             "status": "success",
-            "mensaje": f"Asistencia registrada automáticamente en red '{ssid_final}'",
+            "mensaje": f"Asistencia registrada automáticamente en '{ssid_final}'",
             "fecha_hora": nueva_asistencia.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
             "red_activa": True,
             "ssid_actual": ssid_final,
             "zona": red_activa_info["zona"],
-            "token_red": token_red
+            "token_red": token_red,
+            "distancia_metros": distancia_metros
         }
 
     return {
         "status": "already_registered",
-        "mensaje": f"Dispositivo autenticado en red '{ssid_final}'.",
+        "mensaje": f"Dispositivo autenticado en '{ssid_final}'.",
         "red_activa": True,
         "ssid_actual": ssid_final,
         "zona": red_activa_info["zona"],
-        "token_red": token_red
+        "token_red": token_red,
+        "distancia_metros": distancia_metros
     }
 
 @app.get("/api/asistencias/historial")
@@ -337,6 +344,7 @@ def calibrar_red_wifi(ssid: str, request: Request, datos: Optional[CalibrarRedRe
         client_host=origen_cliente,
         lat=datos.lat if datos else None,
         lon=datos.lon if datos else None,
+        radio_metros=datos.radio_metros if datos else 120,
     )
 
 @app.post("/api/admin/redes-wifi/{ssid}/reset")

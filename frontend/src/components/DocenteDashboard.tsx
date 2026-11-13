@@ -18,6 +18,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
   const [ssidDetectado, setSsidDetectado] = useState<string>("Verificando...");
   const [tokenRed, setTokenRed] = useState<string>("Pendiente");
+  const [distanciaCampus, setDistanciaCampus] = useState<number | null>(null);
   const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(10);
   const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
 
@@ -33,6 +34,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [cargandoReporte, setCargandoReporte] = useState<boolean>(false);
 
   const menuRef = useRef<HTMLDivElement>(null);
+  const coordsActualesRef = useRef<{ lat: number; lon: number } | null>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
   const emailActivo = session?.user?.email || "docente.prueba@tecplayacar.edu.mx";
@@ -61,11 +63,16 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const obtenerUbicacionBrowser = (): Promise<{ lat: number; lon: number } | null> => {
     return new Promise((resolve) => {
+      if (coordsActualesRef.current) return resolve(coordsActualesRef.current);
       if (!("geolocation" in navigator)) return resolve(null);
       navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        (pos) => {
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          coordsActualesRef.current = coords;
+          resolve(coords);
+        },
         () => resolve(null),
-        { enableHighAccuracy: true, timeout: 4000 }
+        { enableHighAccuracy: true, timeout: 5000 }
       );
     });
   };
@@ -98,6 +105,25 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     cargarDatosPerfilReal(emailActivo, currentFingerprint);
     evaluarRedWifiReal(emailActivo, currentFingerprint, true);
 
+    let watchId: number | null = null;
+    if ("geolocation" in navigator) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          coordsActualesRef.current = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+          };
+          evaluarRedWifiReal(emailActivo, currentFingerprint, false);
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
+      );
+    }
+
+    const intervalSensor = setInterval(() => {
+      evaluarRedWifiReal(emailActivo, currentFingerprint, false);
+    }, 15000);
+
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setMenuTupAbierto(false);
@@ -107,6 +133,10 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
     return () => {
       clearInterval(timerClock);
+      if (watchId !== null && "geolocation" in navigator) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      clearInterval(intervalSensor);
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [emailActivo]);
@@ -144,8 +174,9 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         const data = await res.json();
         const activa = Boolean(data.red_activa);
         setRedConectada(activa);
-        setSsidDetectado(data.ssid_actual || (activa ? "TUP" : "Red Externa"));
-        setTokenRed(data.token_red || "Sin token (Fuera de red)");
+        setSsidDetectado(data.ssid_actual || (activa ? "TUP" : "Fuera de Campus"));
+        setTokenRed(data.token_red || "Sin token (Fuera de rango)");
+        setDistanciaCampus(typeof data.distancia_metros === "number" ? data.distancia_metros : null);
         if (data.zona) {
           setAulaAsignada(data.zona);
         }
@@ -250,7 +281,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 Aviso de Privacidad y Permisos de Sesión Institucional:
               </p>
               <p>
-                Para automatizar el registro de asistencia mediante la red Wi-Fi del campus, el docente autoriza la identificación digital única de su dispositivo en el aula.
+                Para automatizar el registro de asistencia mediante la red Wi-Fi y el perímetro geográfico del campus, el docente autoriza la identificación digital única de su dispositivo en el aula.
               </p>
               
               <div className="pt-2">
@@ -343,7 +374,14 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               : "border-rose-500/40 bg-rose-950/40 text-rose-300"
           }`}>
             <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-            <span>TUP-WIFI: {verificandoRed ? "Verificando..." : redConectada ? `Activa (${ssidDetectado})` : "Desactivada"}</span>
+            <span>
+              TUP-WIFI:{" "}
+              {verificandoRed
+                ? "Verificando..."
+                : redConectada
+                ? `Activa (${ssidDetectado}${distanciaCampus !== null ? ` • ${distanciaCampus}m` : ""})`
+                : `Desactivada${distanciaCampus !== null ? ` (${distanciaCampus}m)` : ""}`}
+            </span>
           </div>
         </div>
 
@@ -494,7 +532,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                   Hazta que el admin asigne labor, te asignaremos tus asistencias
                 </p>
                 <p className="text-xs text-neutral-400">
-                  El registro en tiempo real por red Wi-Fi se habilitará automáticamente al vincular tu horario de grupo en el panel de administración.
+                  El registro en tiempo real por red Wi-Fi y perímetro se habilitará automáticamente al vincular tu horario de grupo en el panel de administración.
                 </p>
               </div>
             )}
@@ -511,7 +549,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="max-w-md w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-bold text-base">Detección de Red y Estado de Dispositivo</h3>
+              <h3 className="font-bold text-base">Detección de Red y Perímetro Campus</h3>
               <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
             </div>
 
@@ -522,8 +560,15 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
 
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
-                <span className="text-neutral-400">Red Wi-Fi Detectada:</span>
+                <span className="text-neutral-400">Red / Zona Detectada:</span>
                 <span className="font-mono font-bold text-white">{ssidDetectado}</span>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
+                <span className="text-neutral-400">Distancia al Campus TUP:</span>
+                <span className="font-mono font-bold text-emerald-300">
+                  {distanciaCampus !== null ? `${distanciaCampus} metros` : "Sin lectura GPS"}
+                </span>
               </div>
 
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
@@ -545,7 +590,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 <span className="text-neutral-400">Estado de Conexión:</span>
                 <span className={`font-bold flex items-center gap-1.5 ${redConectada ? "text-emerald-400" : "text-rose-400"}`}>
                   <span className={`w-2 h-2 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
-                  {verificandoRed ? "Verificando..." : redConectada ? `Conectado a Red ${ssidDetectado}` : "Fuera de Red TUP"}
+                  {verificandoRed ? "Verificando..." : redConectada ? `En Rango (${ssidDetectado})` : "Fuera de Rango TUP"}
                 </span>
               </div>
             </div>
@@ -556,7 +601,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 disabled={verificandoRed}
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-bold rounded-xl cursor-pointer transition disabled:opacity-50"
               >
-                {verificandoRed ? "Verificando..." : "Re-verificar Red"}
+                {verificandoRed ? "Verificando..." : "Re-verificar Ahora"}
               </button>
               <button
                 onClick={() => setVistaModalActiva(null)}
