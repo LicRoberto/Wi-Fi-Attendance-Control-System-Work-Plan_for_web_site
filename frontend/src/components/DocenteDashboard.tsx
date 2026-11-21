@@ -13,14 +13,13 @@ interface RegistroAsistenciaDocente {
   usuario?: string;
   fecha_hora: string;
   aula?: string;
-  metodo?: string;
   estado: string;
 }
 
 export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [menuTupAbierto, setMenuTupAbierto] = useState<boolean>(false);
   const [vistaModalActiva, setVistaModalActiva] = useState<
-    "historial" | "deteccion" | "incidencias" | "foto" | null
+    "historial" | "deteccion" | "incidencias" | "clase_linea" | "foto" | null
   >(null);
 
   const [deviceId, setDeviceId] = useState<string>("Generando Huella...");
@@ -29,7 +28,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [registrandoAsistencia, setRegistrandoAsistencia] = useState<boolean>(false);
   const [mensajeRegistro, setMensajeRegistro] = useState<{ tipo: "ok" | "error"; texto: string } | null>(null);
 
-  const [aulaAsignada, setAulaAsignada] = useState<string>("Campus Principal TUP - Playacar");
+  const [aulaAsignada, setAulaAsignada] = useState<string>("Sin aula asignada por Administración");
+  const [horarioAulaAsignado, setHorarioAulaAsignado] = useState<string>("Pendiente de horario");
   const [ssidDetectado, setSsidDetectado] = useState<string>("Detectando red...");
   const [tokenRed, setTokenRed] = useState<string>("Pendiente");
   const [distanciaCampus, setDistanciaCampus] = useState<number | null>(null);
@@ -216,6 +216,12 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         if (data.token_red) {
           setTokenRed(data.token_red);
         }
+        if (data.aula_asignada) {
+          setAulaAsignada(data.aula_asignada);
+        }
+        if (data.horario_asignado) {
+          setHorarioAulaAsignado(data.horario_asignado);
+        }
       }
     } catch (err) {
       console.error("Error al obtener perfil", err);
@@ -257,8 +263,11 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         setSsidDetectado(data.ssid_actual || (activa ? "TUP" : "Fuera de Campus"));
         setTokenRed(data.token_red || "Sin token (Fuera de rango)");
         setDistanciaCampus(typeof data.distancia_metros === "number" ? data.distancia_metros : null);
-        if (data.zona) {
-          setAulaAsignada(data.zona);
+        if (data.aula_asignada) {
+          setAulaAsignada(data.aula_asignada);
+        }
+        if (data.horario_asignado) {
+          setHorarioAulaAsignado(data.horario_asignado);
         }
 
         if (activa) {
@@ -303,7 +312,6 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
   };
 
-  // Convierte cualquier timestamp a Fecha (YYYY-MM-DD) y Hora en formato 12 horas (1:00:00 PM)
   const formatearFechaHora12H = (fechaIso: string) => {
     if (!fechaIso) return { fecha: "—", hora: "—" };
     const limpia = fechaIso.replace("T", " ").split(".")[0];
@@ -320,6 +328,20 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       fecha: fechaPart,
       hora: `${hh}:${mmStr || "00"}:${ssStr || "00"} ${sufijo}`,
     };
+  };
+
+  const obtenerTextoAula = (aulaBackend?: string) => {
+    if (
+      !aulaBackend ||
+      aulaBackend.includes("DETECCION") ||
+      aulaBackend.includes("TOKEN") ||
+      aulaBackend.includes("Campus Principal")
+    ) {
+      return aulaAsignada !== "Sin aula asignada por Administración"
+        ? `${aulaAsignada} (${horarioAulaAsignado})`
+        : "Sin aula asignada por Administración";
+    }
+    return aulaBackend;
   };
 
   const abrirModalHistorial = () => {
@@ -472,6 +494,13 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 </button>
 
                 <button
+                  onClick={() => { setVistaModalActiva("clase_linea"); setMenuTupAbierto(false); }}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                >
+                  Clase en línea
+                </button>
+
+                <button
                   onClick={() => { setVistaModalActiva("foto"); setMenuTupAbierto(false); }}
                   className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
                 >
@@ -535,22 +564,25 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       </header>
 
-      {/* VISTA PRINCIPAL: BOTÓN REGISTRAR ASISTENCIA + REGISTROS DEL DOCENTE */}
+      {/* VISTA PRINCIPAL: TECPLAYACAR + REGISTRO DE ASISTENCIAS */}
       <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
         <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
               <span className={`w-2.5 h-2.5 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
               <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
-                {redConectada ? `Conectado en ${ssidDetectado}` : `Estado: ${ssidDetectado}`}
+                {redConectada ? `En Campus (${ssidDetectado})` : `Estado: ${ssidDetectado}`}
               </span>
             </div>
-            <h2 className="text-xl md:text-2xl font-extrabold text-white">
-              Control de Asistencia Docente
+            <h2 className="text-xl md:text-2xl font-extrabold tracking-wide text-white">
+              TECPLAYACAR
             </h2>
             <p className="text-xs text-neutral-300">
               Docente: <span className="font-semibold text-white">{nombreDocente}</span> • Dispositivo:{" "}
               <span className="font-mono text-amber-300">{deviceId}</span>
+            </p>
+            <p className="text-xs text-cyan-300 font-medium">
+              Hora límite en aula asignada: <span className="font-bold text-white">{horarioAulaAsignado}</span>
             </p>
             {mensajeRegistro && (
               <p className={`text-xs font-semibold pt-1 ${mensajeRegistro.tipo === "ok" ? "text-emerald-400" : "text-rose-400"}`}>
@@ -568,7 +600,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           </button>
         </div>
 
-        {/* TABLA DE REGISTRO DE ASISTENCIA DEL DOCENTE: NOMBRE -> FECHA -> HORA -> AULA -> ESTATUS */}
+        {/* TABLA DE REGISTRO DE ASISTENCIA: NOMBRE -> FECHA -> HORA -> AULA -> ESTATUS */}
         <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
           <div className="flex items-center justify-between border-b border-white/10 pb-4">
             <div>
@@ -616,7 +648,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                         <td className="py-3.5 px-4 font-semibold text-white">{reg.usuario || nombreDocente}</td>
                         <td className="py-3.5 px-4 font-mono text-neutral-300">{fecha}</td>
                         <td className="py-3.5 px-4 font-mono text-amber-300 font-bold">{hora}</td>
-                        <td className="py-3.5 px-4 text-neutral-300">{reg.aula || reg.metodo || aulaAsignada}</td>
+                        <td className="py-3.5 px-4 text-neutral-300">{obtenerTextoAula(reg.aula)}</td>
                         <td className="py-3.5 px-4">
                           <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                             {reg.estado}
@@ -632,7 +664,37 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       </section>
 
-      {/* MODAL INCIDENCIAS (DESDE OPCIONES DEL DOCENTE -> INCIDENCIAS) */}
+      {/* MODAL CLASE EN LÍNEA (EN DESARROLLO) */}
+      {vistaModalActiva === "clase_linea" && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-md w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="font-bold text-base">Clase en Línea — TECPLAYACAR</h3>
+              <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+            </div>
+
+            <div className="p-6 text-center space-y-2.5 bg-black/50 rounded-2xl border border-white/10">
+              <span className="inline-block px-3 py-1 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                Módulo en Desarrollo
+              </span>
+              <p className="font-bold text-white text-sm pt-1">
+                Registro de sesiones virtuales en construcción
+              </p>
+              <p className="text-xs text-neutral-400 leading-relaxed">
+                Próximamente podrás validar tus clases a distancia y enlaces institucionales directamente desde este apartado.
+              </p>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button onClick={() => setVistaModalActiva(null)} className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer">
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL INCIDENCIAS */}
       {vistaModalActiva === "incidencias" && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
           <div className="max-w-2xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 md:p-8 space-y-5 text-white shadow-2xl my-8">
@@ -793,7 +855,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                       <div>
                         <p className="font-bold text-white">{item.usuario || nombreDocente}</p>
                         <p className="text-neutral-400 font-mono">{fecha} • {hora}</p>
-                        <p className="text-[11px] text-neutral-500">{item.aula || item.metodo || aulaAsignada}</p>
+                        <p className="text-[11px] text-neutral-500">{obtenerTextoAula(item.aula)}</p>
                       </div>
                       <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300">
                         {item.estado}
@@ -857,7 +919,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
 
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
-                <span className="text-neutral-400">Aula / Zona Asignada:</span>
+                <span className="text-neutral-400">Aula Asignada:</span>
                 <span className="font-bold text-neutral-300">{aulaAsignada}</span>
               </div>
 

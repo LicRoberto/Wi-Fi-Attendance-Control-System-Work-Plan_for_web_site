@@ -181,7 +181,9 @@ def obtener_perfil(
         "email": usuario.email,
         "rol": usuario.rol,
         "mac_address": usuario.mac_address,
-        "token_red": token_red
+        "token_red": token_red,
+        "aula_asignada": None,
+        "horario_asignado": None
     }
 
 @app.post("/api/usuarios/consentimiento")
@@ -272,7 +274,6 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
         if ultimo_registro else 9999
     )
 
-    # Registra automáticamente la primera entrada del día o si el docente pulsa "Registrar Asistencia" (con enfriamiento de 30s)
     debe_insertar = (not ya_registro_hoy) or (bool(datos.forzar_manual) and segundos_desde_ultimo >= 30)
 
     if debe_insertar:
@@ -326,18 +327,23 @@ def obtener_historial(email: str, desde: Optional[str] = None, db: Session = Dep
     asistencias = query.order_by(models.Asistencia.fecha_hora.desc()).limit(30).all()
     resultado = []
     for a in asistencias:
+        metodo_raw = a.metodo or ""
+        es_tecnico = any(
+            tag in metodo_raw.upper()
+            for tag in ("DETECCION", "TOKEN", "RED_", "PERIMETRO", "CAMPUS PRINCIPAL")
+        )
+        aula_texto = "Sin aula asignada por Administración" if (not metodo_raw or es_tecnico) else metodo_raw
         resultado.append({
             "id": a.id,
             "usuario": usuario.nombre,
             "fecha_hora": a.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
-            "aula": a.metodo or "Campus Principal TUP - Playacar",
+            "aula": aula_texto,
             "estado": a.estado
         })
     return resultado
 
 @app.post("/api/asistencias/historial/limpiar-vista")
 def limpiar_vista_historial_docente(datos: LimpiarHistorialDocenteRequest):
-    # Devuelve la marca de tiempo actual de corte para la vista del docente sin borrar nada en BD (el Admin conserva todo)
     return {
         "status": "success",
         "corte_iso": _ahora_cancun().strftime("%Y-%m-%dT%H:%M:%S"),
