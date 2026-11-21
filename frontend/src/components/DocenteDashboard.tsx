@@ -10,9 +10,10 @@ interface DocenteDashboardProps {
 
 interface RegistroAsistenciaDocente {
   id: number;
+  usuario?: string;
   fecha_hora: string;
-  ip_origen: string;
-  metodo: string;
+  aula?: string;
+  metodo?: string;
   estado: string;
 }
 
@@ -28,14 +29,15 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [registrandoAsistencia, setRegistrandoAsistencia] = useState<boolean>(false);
   const [mensajeRegistro, setMensajeRegistro] = useState<{ tipo: "ok" | "error"; texto: string } | null>(null);
 
-  const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
-  const [ssidDetectado, setSsidDetectado] = useState<string>("Verificando...");
+  const [aulaAsignada, setAulaAsignada] = useState<string>("Campus Principal TUP - Playacar");
+  const [ssidDetectado, setSsidDetectado] = useState<string>("Detectando red...");
   const [tokenRed, setTokenRed] = useState<string>("Pendiente");
   const [distanciaCampus, setDistanciaCampus] = useState<number | null>(null);
-  const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(10);
+  const [toleranciaMinutos] = useState<number>(10);
 
   const [historialAsistencias, setHistorialAsistencias] = useState<RegistroAsistenciaDocente[]>([]);
   const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
+  const [limpiandoHistorial, setLimpiandoHistorial] = useState<boolean>(false);
 
   const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(false);
   const [reloj12H, setReloj12H] = useState<string>("");
@@ -52,7 +54,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const coordsActualesRef = useRef<{ lat: number; lon: number } | null>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
-  const emailActivo = session?.user?.email || "docente.prueba@tecplayacar.edu.mx";
+  const emailActivo = session?.user?.email || "docente.tup@tecplayacar.edu.mx";
   const nombreDocente = session?.user?.name || "Docente TUP";
 
   const manejarCerrarSesion = async () => {
@@ -96,7 +98,12 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const cargarHistorialReal = async (email: string) => {
     setCargandoHistorial(true);
     try {
-      const res = await fetch(`${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}`);
+      const corteLocal = localStorage.getItem(`tup_corte_historial_${email}`) || "";
+      const url = corteLocal
+        ? `${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}&desde=${encodeURIComponent(corteLocal)}`
+        : `${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}`;
+
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setHistorialAsistencias(Array.isArray(data) ? data : []);
@@ -105,6 +112,29 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       console.error("Error al obtener historial de asistencias", err);
     } finally {
       setCargandoHistorial(false);
+    }
+  };
+
+  const manejarRestablecerHistorial = async () => {
+    setLimpiandoHistorial(true);
+    try {
+      const res = await fetch(`${API_URL}/api/asistencias/historial/limpiar-vista`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailActivo }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.corte_iso) {
+          localStorage.setItem(`tup_corte_historial_${emailActivo}`, data.corte_iso);
+        }
+        setHistorialAsistencias([]);
+        alert("Tu vista del historial ha sido restablecida. El Administrador conserva el respaldo completo.");
+      }
+    } catch (err) {
+      console.error("Error al restablecer historial", err);
+    } finally {
+      setLimpiandoHistorial(false);
     }
   };
 
@@ -121,17 +151,19 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     const currentFingerprint = generarDeviceFingerprint();
     setDeviceId(currentFingerprint);
 
-    const timerClock = setInterval(() => {
+    const actualizarReloj = () => {
       const ahora = new Date();
       setReloj12H(
         ahora.toLocaleTimeString("en-US", {
-          hour: "2-digit",
+          hour: "numeric",
           minute: "2-digit",
           second: "2-digit",
           hour12: true,
         })
       );
-    }, 1000);
+    };
+    actualizarReloj();
+    const timerClock = setInterval(actualizarReloj, 1000);
 
     cargarDatosPerfilReal(emailActivo, currentFingerprint);
     cargarHistorialReal(emailActivo);
@@ -175,7 +207,9 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/usuarios/me?email=${encodeURIComponent(email)}&device_id=${encodeURIComponent(fingerprint)}`);
+      const res = await fetch(
+        `${API_URL}/api/usuarios/me?email=${encodeURIComponent(email)}&nombre=${encodeURIComponent(nombreDocente)}&device_id=${encodeURIComponent(fingerprint)}`
+      );
       if (res.ok) {
         const data = await res.json();
         setDeviceId(data.mac_address || fingerprint);
@@ -208,9 +242,11 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
+          nombre: nombreDocente,
           device_fingerprint: fingerprint,
           lat: coords?.lat ?? null,
           lon: coords?.lon ?? null,
+          forzar_manual: mostrarFeedbackManual,
         }),
       });
 
@@ -267,13 +303,22 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
   };
 
-  const formatearFechaHora = (fechaIso: string) => {
+  // Convierte cualquier timestamp a Fecha (YYYY-MM-DD) y Hora en formato 12 horas (1:00:00 PM)
+  const formatearFechaHora12H = (fechaIso: string) => {
     if (!fechaIso) return { fecha: "—", hora: "—" };
     const limpia = fechaIso.replace("T", " ").split(".")[0];
     const [fechaPart, horaPart] = limpia.split(" ");
+    if (!horaPart) return { fecha: fechaPart || limpia, hora: "—" };
+
+    const [hhStr, mmStr, ssStr] = horaPart.split(":");
+    let hh = parseInt(hhStr, 10);
+    const sufijo = hh >= 12 ? "PM" : "AM";
+    hh = hh % 12;
+    if (hh === 0) hh = 12;
+
     return {
-      fecha: fechaPart || limpia,
-      hora: horaPart || "—",
+      fecha: fechaPart,
+      hora: `${hh}:${mmStr || "00"}:${ssStr || "00"} ${sufijo}`,
     };
   };
 
@@ -446,7 +491,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           <div className="flex items-center gap-2 border border-white/10 px-3.5 py-1.5 rounded-xl bg-black/50 text-neutral-200">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
             <span className="text-xs font-bold font-mono tracking-wider text-rose-400">
-              {reloj12H || "03:00:00 PM"}
+              {reloj12H || "12:00:00 PM"}
             </span>
           </div>
 
@@ -492,7 +537,6 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
       {/* VISTA PRINCIPAL: BOTÓN REGISTRAR ASISTENCIA + REGISTROS DEL DOCENTE */}
       <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
-        {/* TARJETA DE REGISTRO DE ASISTENCIA */}
         <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -524,7 +568,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           </button>
         </div>
 
-        {/* TABLA DE REGISTRO DE ASISTENCIA DEL DOCENTE */}
+        {/* TABLA DE REGISTRO DE ASISTENCIA DEL DOCENTE: NOMBRE -> FECHA -> HORA -> AULA -> ESTATUS */}
         <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
           <div className="flex items-center justify-between border-b border-white/10 pb-4">
             <div>
@@ -532,7 +576,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 Registro de Asistencias del Docente
               </h3>
               <p className="text-xs text-neutral-400 mt-0.5">
-                Marcaciones registradas con fecha, hora y validación institucional.
+                Marcaciones registradas automáticamente al detectar el campus y red institucional.
               </p>
             </div>
             <button
@@ -551,7 +595,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                   <th className="py-3 px-4">Nombre del Docente</th>
                   <th className="py-3 px-4">Fecha</th>
                   <th className="py-3 px-4">Hora</th>
-                  <th className="py-3 px-4">Método / Red</th>
+                  <th className="py-3 px-4">Aula</th>
                   <th className="py-3 px-4">Estatus</th>
                 </tr>
               </thead>
@@ -561,18 +605,18 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                     <td colSpan={5} className="py-8 text-center text-neutral-400">
                       {cargandoHistorial
                         ? "Consultando registros de asistencia..."
-                        : "Aún no tienes asistencias registradas. Presiona 'Registrar Asistencia' estando dentro del campus TUP."}
+                        : "Sin registros visibles. Al ingresar al campus TUP o presionar 'Registrar Asistencia' aparecerá aquí."}
                     </td>
                   </tr>
                 ) : (
                   historialAsistencias.map((reg) => {
-                    const { fecha, hora } = formatearFechaHora(reg.fecha_hora);
+                    const { fecha, hora } = formatearFechaHora12H(reg.fecha_hora);
                     return (
                       <tr key={reg.id} className="hover:bg-white/5 transition">
-                        <td className="py-3.5 px-4 font-semibold text-white">{nombreDocente}</td>
+                        <td className="py-3.5 px-4 font-semibold text-white">{reg.usuario || nombreDocente}</td>
                         <td className="py-3.5 px-4 font-mono text-neutral-300">{fecha}</td>
                         <td className="py-3.5 px-4 font-mono text-amber-300 font-bold">{hora}</td>
-                        <td className="py-3.5 px-4 font-mono text-neutral-400">{reg.metodo}</td>
+                        <td className="py-3.5 px-4 text-neutral-300">{reg.aula || reg.metodo || aulaAsignada}</td>
                         <td className="py-3.5 px-4">
                           <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                             {reg.estado}
@@ -715,12 +759,17 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       )}
 
-      {/* MODAL HISTORIAL */}
+      {/* MODAL HISTORIAL CON BOTÓN PARA RESTABLECER VISTA DOCENTE */}
       {vistaModalActiva === "historial" && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="max-w-xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-bold text-base">Historial de Asistencias Registradas</h3>
+              <div>
+                <h3 className="font-bold text-base">Historial de Asistencias Registradas</h3>
+                <p className="text-[11px] text-neutral-400">
+                  Puedes restablecer tu vista local; Administración conserva el historial completo.
+                </p>
+              </div>
               <button onClick={() => setVistaModalActiva(null)} className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
             </div>
 
@@ -729,21 +778,22 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
             ) : historialAsistencias.length === 0 ? (
               <div className="p-8 text-center space-y-2 bg-black/50 rounded-2xl border border-white/10 my-2">
                 <p className="font-bold text-amber-300 text-sm">
-                  Sin registros de asistencia aún
+                  Sin registros visibles en tu historial
                 </p>
                 <p className="text-xs text-neutral-400">
-                  Tus marcaciones aparecerán aquí en cuanto registres tu asistencia en el campus TUP.
+                  Las nuevas asistencias registradas en el campus TUP aparecerán aquí automáticamente.
                 </p>
               </div>
             ) : (
               <div className="max-h-72 overflow-y-auto divide-y divide-white/10 text-xs">
                 {historialAsistencias.map((item) => {
-                  const { fecha, hora } = formatearFechaHora(item.fecha_hora);
+                  const { fecha, hora } = formatearFechaHora12H(item.fecha_hora);
                   return (
-                    <div key={item.id} className="py-3 flex items-center justify-between">
+                    <div key={item.id} className="py-3 flex items-center justify-between gap-2">
                       <div>
-                        <p className="font-bold text-white">{nombreDocente}</p>
+                        <p className="font-bold text-white">{item.usuario || nombreDocente}</p>
                         <p className="text-neutral-400 font-mono">{fecha} • {hora}</p>
+                        <p className="text-[11px] text-neutral-500">{item.aula || item.metodo || aulaAsignada}</p>
                       </div>
                       <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300">
                         {item.estado}
@@ -754,8 +804,21 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
             )}
 
-            <div className="pt-2 flex justify-end">
-              <button onClick={() => setVistaModalActiva(null)} className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer">Cerrar</button>
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+              <button
+                onClick={manejarRestablecerHistorial}
+                disabled={limpiandoHistorial}
+                className="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 text-xs font-bold rounded-xl cursor-pointer transition disabled:opacity-50"
+              >
+                {limpiandoHistorial ? "Restableciendo..." : "Restablecer / Borrar mi historial"}
+              </button>
+
+              <button
+                onClick={() => setVistaModalActiva(null)}
+                className="px-4 py-2 bg-[#7A1C2E] text-white text-xs font-bold rounded-xl cursor-pointer"
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>
@@ -784,7 +847,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
                 <span className="text-neutral-400">Distancia al Campus TUP:</span>
                 <span className="font-mono font-bold text-emerald-300">
-                  {distanciaCampus !== null ? `${distanciaCampus} metros` : "Sin lectura GPS"}
+                  {distanciaCampus !== null ? `${distanciaCampus} metros` : "Validado por IP Campus"}
                 </span>
               </div>
 

@@ -7,7 +7,9 @@ class NetworkConfigManager:
     DEFAULT_SSID_BIN = "010101000101010101010000"  # "TUP"
     DEFAULT_PASS_BIN = "011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000110010001100000011000100111001"
     DEFAULT_ZONA = "Campus Principal TUP - Playacar"
-    DEFAULT_RADIO_METROS = 120
+    # Pre-calibración institucional real del Campus TUP (IP + Coordenadas Playacar Fase II + Radio 250m)
+    DEFAULT_FIRMA_INICIAL = "189.235.103.80|GEO:20.612850,-87.084620|RAD:250"
+    DEFAULT_RADIO_METROS = 250
 
     @staticmethod
     def _to_binary(text: str) -> str:
@@ -48,10 +50,14 @@ class NetworkConfigManager:
                 ssid_bin=self.DEFAULT_SSID_BIN,
                 password_bin=self.DEFAULT_PASS_BIN,
                 zona=self.DEFAULT_ZONA,
-                firma_red_bin="",
+                firma_red_bin=self._to_binary(self.DEFAULT_FIRMA_INICIAL),
                 activa=True
             )
             db.add(red_tup)
+            db.commit()
+        elif not red_tup.firma_red_bin:
+            red_tup.firma_red_bin = self._to_binary(self.DEFAULT_FIRMA_INICIAL)
+            red_tup.activa = True
             db.commit()
 
     def generar_token_dispositivo(self, device_id: str, ssid_bin: str = "") -> str:
@@ -117,7 +123,7 @@ class NetworkConfigManager:
         red.activa = True
         db.commit()
 
-        geo_msg = f" + Geocerca ({geo_final}, radio {radio_final}m)" if geo_final else " (Sin coordenadas GPS)"
+        geo_msg = f" + Geocerca ({geo_final}, radio {radio_final}m)" if geo_final else ""
         return {
             "status": "success",
             "mensaje": f"Calibrado en '{ssid}': IP '{firma_nueva}'{geo_msg}.",
@@ -130,9 +136,9 @@ class NetworkConfigManager:
         redes = db.query(models.RedInstitucional).all()
         for r in redes:
             if self._from_binary(r.ssid_bin) == ssid or ssid == "ALL":
-                r.firma_red_bin = ""
+                r.firma_red_bin = self._to_binary(f"|GEO:20.612850,-87.084620|RAD:{self.DEFAULT_RADIO_METROS}")
         db.commit()
-        return {"status": "success", "mensaje": f"Calibración de '{ssid}' limpiada."}
+        return {"status": "success", "mensaje": f"Enlaces IP de '{ssid}' reiniciados."}
 
     def validar_conexion_dispositivo(
         self,
@@ -152,7 +158,6 @@ class NetworkConfigManager:
             models.RedInstitucional.activa == True
         ).all()
 
-        alguna_calibrada = False
         distancia_reportada = None
 
         for red in redes_activas:
@@ -160,10 +165,6 @@ class NetworkConfigManager:
             firma_guardada_txt = self._from_binary(red.firma_red_bin)
             ips_guardadas, geo_guardada, radio_metros = self._parsear_firmas_guardadas(firma_guardada_txt)
 
-            if not ips_guardadas and not geo_guardada:
-                continue
-
-            alguna_calibrada = True
             ip_coincide = bool(firma_actual and firma_actual in ips_guardadas)
             en_rango_gps = False
 
@@ -173,8 +174,8 @@ class NetworkConfigManager:
                 distancia_reportada = distancia
                 en_rango_gps = distancia <= radio_metros
 
-            # Caso 1: IP institucional + dentro del rango (o sin GPS calibrado aún)
-            if ip_coincide and (en_rango_gps or not geo_guardada):
+            # 1. Validación por IP institucional del Campus TUP
+            if ip_coincide:
                 return {
                     "valida": True,
                     "ssid": ssid_decodificado,
@@ -182,11 +183,11 @@ class NetworkConfigManager:
                     "firma_actual": firma_actual,
                     "distancia_metros": distancia_reportada,
                     "radio_metros": radio_metros,
-                    "metodo_validacion": "RED_Y_PERIMETRO_TUP",
+                    "metodo_validacion": "RED_INSTITUCIONAL_TUP",
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
-            # Caso 2: Físicamente dentro del radio institucional configurado en Admin
+            # 2. Validación automática por Perímetro Geográfico del Campus TUP
             if geo_guardada and en_rango_gps:
                 return {
                     "valida": True,
@@ -199,21 +200,13 @@ class NetworkConfigManager:
                     "token_red": self.generar_token_dispositivo(device_id, red.ssid_bin)
                 }
 
-        if not alguna_calibrada:
-            return {
-                "valida": False,
-                "ssid": "Sin calibrar",
-                "firma_actual": firma_actual,
-                "motivo": "El Administrador aún no ha calibrado el perímetro/red del campus."
-            }
-
-        detalle_dist = f" a {distancia_reportada}m del campus" if distancia_reportada is not None else " (GPS no autorizado)"
+        detalle_dist = f" a {distancia_reportada}m del campus" if distancia_reportada is not None else " (activa ubicación o conéctate al Wi-Fi TUP)"
         return {
             "valida": False,
             "ssid": "Fuera de Campus",
             "firma_actual": firma_actual,
             "distancia_metros": distancia_reportada,
-            "motivo": f"Fuera de rango institucional{detalle_dist} (IP: {firma_actual})."
+            "motivo": f"Fuera de rango institucional{detalle_dist}."
         }
 
     def obtener_redes_decodificadas(self, db: Session, client_host: str = ""):

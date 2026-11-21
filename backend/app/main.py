@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from pydantic import BaseModel
 
@@ -25,6 +25,10 @@ app.add_middleware(
 )
 
 _ADM_BIN = "0111010001110101011100000011011100110000001101000011000101000000011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000101110011001010110010001110101001011100110110101111000"
+ZONA_CANCUN = timezone(timedelta(hours=-5))
+
+def _ahora_cancun() -> datetime:
+    return datetime.now(ZONA_CANCUN).replace(tzinfo=None)
 
 def _get_admin_email() -> str:
     chars = [_ADM_BIN[i:i+8] for i in range(0, len(_ADM_BIN), 8)]
@@ -45,7 +49,7 @@ class RedWifiCreate(BaseModel):
 class CalibrarRedRequest(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
-    radio_metros: Optional[int] = 120
+    radio_metros: Optional[int] = 250
 
 class LoginEmpleadoRequest(BaseModel):
     numero_empleado: str
@@ -59,10 +63,15 @@ class PermisosConsentimientoRequest(BaseModel):
 
 class AutoMarcacionRequest(BaseModel):
     email: str
+    nombre: Optional[str] = None
     ssid_actual: Optional[str] = None
     device_fingerprint: Optional[str] = None
     lat: Optional[float] = None
     lon: Optional[float] = None
+    forzar_manual: Optional[bool] = False
+
+class LimpiarHistorialDocenteRequest(BaseModel):
+    email: str
 
 @app.get("/")
 def home():
@@ -71,7 +80,7 @@ def home():
 @app.post("/api/auth/login-empleado")
 def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     if datos.numero_empleado.upper() == "DOC-2026-01" and datos.password == "tup2026":
-        email_docente = "docente.prueba@tecplayacar.edu.mx"
+        email_docente = "docente.tup@tecplayacar.edu.mx"
         fingerprint = datos.device_fingerprint or "TUP-DEV-DEFAULT"
 
         usuario = db.query(models.Usuario).filter(models.Usuario.email == email_docente).first()
@@ -79,7 +88,7 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
         if not usuario:
             usuario = models.Usuario(
                 email=email_docente,
-                nombre="Prof. Docente de Prueba",
+                nombre="Docente TUP",
                 numero_empleado="DOC-2026-01",
                 rol="docente",
                 mac_address=fingerprint
@@ -118,6 +127,7 @@ def login_empleado(datos: LoginEmpleadoRequest, request: Request, response: Resp
 @app.get("/api/usuarios/me")
 def obtener_perfil(
     email: Optional[str] = None,
+    nombre: Optional[str] = None,
     num_empleado: Optional[str] = None,
     device_id: Optional[str] = None,
     db: Session = Depends(get_db)
@@ -130,7 +140,7 @@ def obtener_perfil(
     elif num_empleado:
         usuario = db.query(models.Usuario).filter(models.Usuario.numero_empleado == num_empleado).first()
         if not usuario and num_empleado.upper() == "DOC-2026-01":
-            email = "docente.prueba@tecplayacar.edu.mx"
+            email = "docente.tup@tecplayacar.edu.mx"
             usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
 
     if not usuario and not email:
@@ -144,7 +154,7 @@ def obtener_perfil(
     if not usuario:
         usuario = models.Usuario(
             email=email,
-            nombre="Docente TUP",
+            nombre=nombre or "Docente TUP",
             numero_empleado=num_empleado,
             rol=rol_asignado,
             mac_address=identificador_disp
@@ -152,9 +162,16 @@ def obtener_perfil(
         db.add(usuario)
         db.commit()
         db.refresh(usuario)
-    elif device_id and usuario.mac_address != device_id:
-        usuario.mac_address = device_id
-        db.commit()
+    else:
+        actualizado = False
+        if device_id and usuario.mac_address != device_id:
+            usuario.mac_address = device_id
+            actualizado = True
+        if nombre and usuario.nombre in ("Docente TUP", "Prof. Docente de Prueba", ""):
+            usuario.nombre = nombre
+            actualizado = True
+        if actualizado:
+            db.commit()
 
     token_red = network_manager.generar_token_dispositivo(usuario.mac_address)
 
@@ -191,13 +208,16 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
         es_admin = (datos.email.lower() == admin_email.lower())
         usuario = models.Usuario(
             email=datos.email,
-            nombre="Docente TUP" if not es_admin else "Administrador TUP",
+            nombre=datos.nombre or ("Docente TUP" if not es_admin else "Administrador TUP"),
             rol="admin" if es_admin else "docente",
             mac_address=datos.device_fingerprint or "TUP-DEV-AUTO"
         )
         db.add(usuario)
         db.commit()
         db.refresh(usuario)
+    elif datos.nombre and usuario.nombre in ("Docente TUP", "Prof. Docente de Prueba", ""):
+        usuario.nombre = datos.nombre
+        db.commit()
 
     dispositivo_id = datos.device_fingerprint or usuario.mac_address
     if not dispositivo_id or dispositivo_id == "TUP-DEV-PENDIENTE":
@@ -226,81 +246,103 @@ def auto_marcar_asistencia(datos: AutoMarcacionRequest, request: Request, db: Se
     if not red_activa_info["valida"]:
         return {
             "status": "red_invalida",
-            "mensaje": red_activa_info.get("motivo", "Fuera de la red Wi-Fi institucional del TUP."),
+            "mensaje": red_activa_info.get("motivo", "Fuera de la red o perímetro del Campus TUP."),
             "red_activa": False,
             "ssid_actual": red_activa_info.get("ssid", "Fuera de Campus"),
             "distancia_metros": red_activa_info.get("distancia_metros")
         }
 
     ssid_final = red_activa_info["ssid"]
+    zona_final = red_activa_info["zona"]
     token_red = red_activa_info["token_red"]
     distancia_metros = red_activa_info.get("distancia_metros")
-    metodo_val = red_activa_info.get("metodo_validacion", f"TOKEN_WIFI_{ssid_final}")
-    ahora = datetime.now()
+    ahora = _ahora_cancun()
     hoy_str = ahora.strftime("%Y-%m-%d")
 
-    registros_hoy = db.query(models.Asistencia).filter(
-        models.Asistencia.usuario_id == usuario.id
-    ).all()
+    ultimo_registro = (
+        db.query(models.Asistencia)
+        .filter(models.Asistencia.usuario_id == usuario.id)
+        .order_by(models.Asistencia.fecha_hora.desc())
+        .first()
+    )
 
-    ya_registro = any(r.fecha_hora.strftime("%Y-%m-%d") == hoy_str for r in registros_hoy)
+    ya_registro_hoy = bool(ultimo_registro and ultimo_registro.fecha_hora.strftime("%Y-%m-%d") == hoy_str)
+    segundos_desde_ultimo = (
+        abs((ahora - ultimo_registro.fecha_hora).total_seconds())
+        if ultimo_registro else 9999
+    )
 
-    if not ya_registro:
+    # Registra automáticamente la primera entrada del día o si el docente pulsa "Registrar Asistencia" (con enfriamiento de 30s)
+    debe_insertar = (not ya_registro_hoy) or (bool(datos.forzar_manual) and segundos_desde_ultimo >= 30)
+
+    if debe_insertar:
         nueva_asistencia = models.Asistencia(
             usuario_id=usuario.id,
             fecha_hora=ahora,
             ip_origen=dispositivo_id,
-            metodo=metodo_val,
+            metodo=zona_final,
             estado="PRESENTE"
         )
         db.add(nueva_asistencia)
         db.commit()
         db.refresh(nueva_asistencia)
 
-        todos = db.query(models.Asistencia).filter(
-            models.Asistencia.usuario_id == usuario.id
-        ).order_by(models.Asistencia.fecha_hora.desc()).all()
-
-        if len(todos) > 10:
-            for reg in todos[10:]:
-                db.delete(reg)
-            db.commit()
-
         return {
             "status": "success",
-            "mensaje": f"Asistencia registrada automáticamente en '{ssid_final}'",
+            "mensaje": f"Asistencia registrada en {zona_final}",
             "fecha_hora": nueva_asistencia.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
             "red_activa": True,
             "ssid_actual": ssid_final,
-            "zona": red_activa_info["zona"],
+            "zona": zona_final,
             "token_red": token_red,
             "distancia_metros": distancia_metros
         }
 
     return {
         "status": "already_registered",
-        "mensaje": f"Dispositivo autenticado en '{ssid_final}'.",
+        "mensaje": f"Asistencia activa y verificada en {zona_final}.",
         "red_activa": True,
         "ssid_actual": ssid_final,
-        "zona": red_activa_info["zona"],
+        "zona": zona_final,
         "token_red": token_red,
         "distancia_metros": distancia_metros
     }
 
 @app.get("/api/asistencias/historial")
-def obtener_historial(email: str, db: Session = Depends(get_db)):
+def obtener_historial(email: str, desde: Optional[str] = None, db: Session = Depends(get_db)):
     usuario = db.query(models.Usuario).filter(models.Usuario.email == email).first()
     if not usuario:
         return []
     
-    asistencias = (
-        db.query(models.Asistencia)
-        .filter(models.Asistencia.usuario_id == usuario.id)
-        .order_by(models.Asistencia.fecha_hora.desc())
-        .limit(10)
-        .all()
-    )
-    return asistencias
+    query = db.query(models.Asistencia).filter(models.Asistencia.usuario_id == usuario.id)
+
+    if desde:
+        try:
+            fecha_corte = datetime.fromisoformat(desde)
+            query = query.filter(models.Asistencia.fecha_hora > fecha_corte)
+        except ValueError:
+            pass
+
+    asistencias = query.order_by(models.Asistencia.fecha_hora.desc()).limit(30).all()
+    resultado = []
+    for a in asistencias:
+        resultado.append({
+            "id": a.id,
+            "usuario": usuario.nombre,
+            "fecha_hora": a.fecha_hora.strftime("%Y-%m-%d %H:%M:%S"),
+            "aula": a.metodo or "Campus Principal TUP - Playacar",
+            "estado": a.estado
+        })
+    return resultado
+
+@app.post("/api/asistencias/historial/limpiar-vista")
+def limpiar_vista_historial_docente(datos: LimpiarHistorialDocenteRequest):
+    # Devuelve la marca de tiempo actual de corte para la vista del docente sin borrar nada en BD (el Admin conserva todo)
+    return {
+        "status": "success",
+        "corte_iso": _ahora_cancun().strftime("%Y-%m-%dT%H:%M:%S"),
+        "mensaje": "Historial local del docente restablecido. La bitácora del administrador conserva el respaldo completo."
+    }
 
 @app.get("/api/admin/asistencias")
 def obtener_todas_asistencias(db: Session = Depends(get_db)):
@@ -344,7 +386,7 @@ def calibrar_red_wifi(ssid: str, request: Request, datos: Optional[CalibrarRedRe
         client_host=origen_cliente,
         lat=datos.lat if datos else None,
         lon=datos.lon if datos else None,
-        radio_metros=datos.radio_metros if datos else 120,
+        radio_metros=datos.radio_metros if datos else 250,
     )
 
 @app.post("/api/admin/redes-wifi/{ssid}/reset")
