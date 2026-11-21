@@ -8,18 +8,33 @@ interface DocenteDashboardProps {
   session: any;
 }
 
+interface RegistroAsistenciaDocente {
+  id: number;
+  fecha_hora: string;
+  ip_origen: string;
+  metodo: string;
+  estado: string;
+}
+
 export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [menuTupAbierto, setMenuTupAbierto] = useState<boolean>(false);
-  const [vistaModalActiva, setVistaModalActiva] = useState<"historial" | "deteccion" | "foto" | null>(null);
+  const [vistaModalActiva, setVistaModalActiva] = useState<
+    "historial" | "deteccion" | "incidencias" | "foto" | null
+  >(null);
 
   const [deviceId, setDeviceId] = useState<string>("Generando Huella...");
   const [redConectada, setRedConectada] = useState<boolean>(false);
   const [verificandoRed, setVerificandoRed] = useState<boolean>(false);
+  const [registrandoAsistencia, setRegistrandoAsistencia] = useState<boolean>(false);
+  const [mensajeRegistro, setMensajeRegistro] = useState<{ tipo: "ok" | "error"; texto: string } | null>(null);
+
   const [aulaAsignada, setAulaAsignada] = useState<string>("Pendiente de asignación por Administración");
   const [ssidDetectado, setSsidDetectado] = useState<string>("Verificando...");
   const [tokenRed, setTokenRed] = useState<string>("Pendiente");
   const [distanciaCampus, setDistanciaCampus] = useState<number | null>(null);
   const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(10);
+
+  const [historialAsistencias, setHistorialAsistencias] = useState<RegistroAsistenciaDocente[]>([]);
   const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
 
   const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(false);
@@ -38,6 +53,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
   const emailActivo = session?.user?.email || "docente.prueba@tecplayacar.edu.mx";
+  const nombreDocente = session?.user?.name || "Docente TUP";
 
   const manejarCerrarSesion = async () => {
     await signOut({ redirect: false });
@@ -77,6 +93,21 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     });
   };
 
+  const cargarHistorialReal = async (email: string) => {
+    setCargandoHistorial(true);
+    try {
+      const res = await fetch(`${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setHistorialAsistencias(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Error al obtener historial de asistencias", err);
+    } finally {
+      setCargandoHistorial(false);
+    }
+  };
+
   useEffect(() => {
     const claveStorage = `tup_privacidad_${emailActivo}`;
     const aceptadoLocal = localStorage.getItem(claveStorage);
@@ -103,7 +134,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }, 1000);
 
     cargarDatosPerfilReal(emailActivo, currentFingerprint);
-    evaluarRedWifiReal(emailActivo, currentFingerprint, true);
+    cargarHistorialReal(emailActivo);
+    evaluarRedWifiReal(emailActivo, currentFingerprint, true, false);
 
     let watchId: number | null = null;
     if ("geolocation" in navigator) {
@@ -113,7 +145,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
             lat: pos.coords.latitude,
             lon: pos.coords.longitude,
           };
-          evaluarRedWifiReal(emailActivo, currentFingerprint, false);
+          evaluarRedWifiReal(emailActivo, currentFingerprint, false, false);
         },
         () => {},
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
@@ -121,7 +153,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
 
     const intervalSensor = setInterval(() => {
-      evaluarRedWifiReal(emailActivo, currentFingerprint, false);
+      evaluarRedWifiReal(emailActivo, currentFingerprint, false, false);
     }, 15000);
 
     const handleClickOutside = (event: MouseEvent) => {
@@ -156,8 +188,19 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
   };
 
-  const evaluarRedWifiReal = async (email: string, fingerprint: string, reintento = true) => {
-    setVerificandoRed(true);
+  const evaluarRedWifiReal = async (
+    email: string,
+    fingerprint: string,
+    reintento = true,
+    mostrarFeedbackManual = false
+  ) => {
+    if (mostrarFeedbackManual) {
+      setRegistrandoAsistencia(true);
+      setMensajeRegistro(null);
+    } else {
+      setVerificandoRed(true);
+    }
+
     try {
       const coords = await obtenerUbicacionBrowser();
       const res = await fetch(`${API_URL}/api/asistencias/auto-marcar`, {
@@ -170,6 +213,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           lon: coords?.lon ?? null,
         }),
       });
+
       if (res.ok) {
         const data = await res.json();
         const activa = Boolean(data.red_activa);
@@ -180,37 +224,68 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         if (data.zona) {
           setAulaAsignada(data.zona);
         }
-        setVerificandoRed(false);
+
+        if (activa) {
+          await cargarHistorialReal(email);
+        }
+
+        if (mostrarFeedbackManual) {
+          if (activa) {
+            setMensajeRegistro({
+              tipo: "ok",
+              texto: data.mensaje || "Asistencia registrada correctamente.",
+            });
+          } else {
+            setMensajeRegistro({
+              tipo: "error",
+              texto: data.mensaje || "No se pudo registrar: fuera de red o perímetro del TUP.",
+            });
+          }
+        }
       } else if (reintento) {
-        setTimeout(() => evaluarRedWifiReal(email, fingerprint, false), 5000);
+        setTimeout(() => evaluarRedWifiReal(email, fingerprint, false, mostrarFeedbackManual), 5000);
       } else {
         setRedConectada(false);
         setSsidDetectado("Sin conexión");
-        setVerificandoRed(false);
+        if (mostrarFeedbackManual) {
+          setMensajeRegistro({ tipo: "error", texto: "Error de conexión con el servidor TUP." });
+        }
       }
     } catch (err) {
       if (reintento) {
-        setTimeout(() => evaluarRedWifiReal(email, fingerprint, false), 5000);
+        setTimeout(() => evaluarRedWifiReal(email, fingerprint, false, mostrarFeedbackManual), 5000);
       } else {
         setRedConectada(false);
         setSsidDetectado("Sin conexión");
-        setVerificandoRed(false);
+        if (mostrarFeedbackManual) {
+          setMensajeRegistro({ tipo: "error", texto: "No fue posible conectar con el servidor." });
+        }
       }
+    } finally {
+      setVerificandoRed(false);
+      setRegistrandoAsistencia(false);
     }
+  };
+
+  const formatearFechaHora = (fechaIso: string) => {
+    if (!fechaIso) return { fecha: "—", hora: "—" };
+    const limpia = fechaIso.replace("T", " ").split(".")[0];
+    const [fechaPart, horaPart] = limpia.split(" ");
+    return {
+      fecha: fechaPart || limpia,
+      hora: horaPart || "—",
+    };
   };
 
   const abrirModalHistorial = () => {
     setVistaModalActiva("historial");
     setMenuTupAbierto(false);
-    setCargandoHistorial(true);
-    setTimeout(() => {
-      setCargandoHistorial(false);
-    }, 400);
+    cargarHistorialReal(emailActivo);
   };
 
   const aceptarPermisosLegales = async () => {
     localStorage.setItem(`tup_privacidad_${emailActivo}`, "true");
-    evaluarRedWifiReal(emailActivo, deviceId, true);
+    evaluarRedWifiReal(emailActivo, deviceId, true, false);
     setMostrarModalPermisos(false);
   };
 
@@ -283,7 +358,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               <p>
                 Para automatizar el registro de asistencia mediante la red Wi-Fi y el perímetro geográfico del campus, el docente autoriza la identificación digital única de su dispositivo en el aula.
               </p>
-              
+
               <div className="pt-2">
                 <Link
                   href="/privacidad"
@@ -345,6 +420,13 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 </button>
 
                 <button
+                  onClick={() => { setVistaModalActiva("incidencias"); setMenuTupAbierto(false); }}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                >
+                  Incidencias
+                </button>
+
+                <button
                   onClick={() => { setVistaModalActiva("foto"); setMenuTupAbierto(false); }}
                   className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
                 >
@@ -387,7 +469,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
         <div className="flex items-center gap-3">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-semibold text-white">{session?.user?.name || "Docente TUP"}</p>
+            <p className="text-sm font-semibold text-white">{nombreDocente}</p>
             <p className="text-xs text-neutral-400">{emailActivo}</p>
           </div>
 
@@ -395,7 +477,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
             {fotoPerfil ? (
               <img src={fotoPerfil} alt="Perfil" className="w-full h-full object-cover" />
             ) : (
-              session?.user?.name?.charAt(0) || "D"
+              nombreDocente.charAt(0) || "D"
             )}
           </div>
 
@@ -408,112 +490,230 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       </header>
 
+      {/* VISTA PRINCIPAL: BOTÓN REGISTRAR ASISTENCIA + REGISTROS DEL DOCENTE */}
       <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
-        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-6">
-          <div className="border-b border-white/10 pb-4">
-            <h3 className="text-lg md:text-xl font-extrabold text-white">
-              Solicitudes, Justificaciones e Incidencias
-            </h3>
-            <p className="text-xs text-neutral-300 mt-1">
-              Cuestionario para notificar faltas, solicitar justificantes o reportar imprevistos en aula.
+        {/* TARJETA DE REGISTRO DE ASISTENCIA */}
+        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${redConectada ? "bg-emerald-400 animate-pulse" : "bg-rose-500"}`}></span>
+              <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+                {redConectada ? `Conectado en ${ssidDetectado}` : `Estado: ${ssidDetectado}`}
+              </span>
+            </div>
+            <h2 className="text-xl md:text-2xl font-extrabold text-white">
+              Control de Asistencia Docente
+            </h2>
+            <p className="text-xs text-neutral-300">
+              Docente: <span className="font-semibold text-white">{nombreDocente}</span> • Dispositivo:{" "}
+              <span className="font-mono text-amber-300">{deviceId}</span>
             </p>
+            {mensajeRegistro && (
+              <p className={`text-xs font-semibold pt-1 ${mensajeRegistro.tipo === "ok" ? "text-emerald-400" : "text-rose-400"}`}>
+                {mensajeRegistro.texto}
+              </p>
+            )}
           </div>
 
-          <form onSubmit={manejarEnvioCuestionario} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
-                  1. ¿Qué deseas reportar o solicitar? *
-                </label>
-                <select
-                  value={motivoSolicitud}
-                  onChange={(e) => setMotivoSolicitud(e.target.value)}
-                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
-                  required
-                >
-                  <option value="" className="bg-neutral-900 text-white">Seleccione una opción...</option>
-                  <option value="justificacion_falta" className="bg-neutral-900 text-white">Solicitar Justificante por Inasistencia / Salud</option>
-                  <option value="permiso_oficial" className="bg-neutral-900 text-white">Solicitud de Permiso Económico / Oficial</option>
-                  <option value="falla_tecnica" className="bg-neutral-900 text-white">Falla Técnica de Equipo / Proyector / Clima</option>
-                  <option value="problema_wifi" className="bg-neutral-900 text-white">Problema de Conexión a Red Wi-Fi TUP</option>
-                </select>
-              </div>
+          <button
+            onClick={() => evaluarRedWifiReal(emailActivo, deviceId, false, true)}
+            disabled={registrandoAsistencia}
+            className="w-full md:w-auto px-7 py-3.5 bg-[#7A1C2E] hover:bg-[#9E2A3F] text-white font-bold text-sm rounded-2xl shadow-xl transition-all cursor-pointer disabled:opacity-50 ring-1 ring-white/15 active:scale-95"
+          >
+            {registrandoAsistencia ? "Registrando Asistencia..." : "Registrar Asistencia"}
+          </button>
+        </div>
 
-              <div>
-                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
-                  2. Fecha correspondiente del evento / falta
-                </label>
-                <input
-                  type="date"
-                  value={fechaEvento}
-                  onChange={(e) => setFechaEvento(e.target.value)}
-                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
-                />
-              </div>
-            </div>
-
+        {/* TABLA DE REGISTRO DE ASISTENCIA DEL DOCENTE */}
+        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
+          <div className="flex items-center justify-between border-b border-white/10 pb-4">
             <div>
-              <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
-                3. ¿Qué está sucediendo? (Pregunta Abierta) *
-              </label>
-              <textarea
-                rows={4}
-                placeholder="Describe a detalle lo que sucede en el aula o el motivo de tu solicitud..."
-                value={preguntaAbierta}
-                onChange={(e) => setPreguntaAbierta(e.target.value)}
-                className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
-                required
-              />
+              <h3 className="text-base md:text-lg font-extrabold text-white">
+                Registro de Asistencias del Docente
+              </h3>
+              <p className="text-xs text-neutral-400 mt-0.5">
+                Marcaciones registradas con fecha, hora y validación institucional.
+              </p>
             </div>
+            <button
+              onClick={() => cargarHistorialReal(emailActivo)}
+              disabled={cargandoHistorial}
+              className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl transition cursor-pointer disabled:opacity-50"
+            >
+              {cargandoHistorial ? "Actualizando..." : "Actualizar"}
+            </button>
+          </div>
 
-            <div>
-              <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
-                4. Observaciones o comentarios adicionales (Opcional)
-              </label>
-              <input
-                type="text"
-                placeholder="Ej. Adjunto número de folio médico o número de equipo..."
-                value={detalleAdicional}
-                onChange={(e) => setDetalleAdicional(e.target.value)}
-                className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
-              />
-            </div>
-
-            <div className="flex items-center justify-between pt-3">
-              {reporteEnviado ? (
-                <span className="text-xs font-bold text-emerald-400">
-                  Cuestionario enviado a Administración correctamente.
-                </span>
-              ) : (
-                <span className="text-[11px] text-neutral-400">
-                  Folio generado automáticamente
-                </span>
-              )}
-              
-              <button
-                type="submit"
-                disabled={cargandoReporte}
-                className="px-6 py-2.5 bg-[#7A1C2E] hover:bg-[#9E2A3F] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer disabled:opacity-50"
-              >
-                {cargandoReporte ? "Enviando..." : "Enviar Cuestionario"}
-              </button>
-            </div>
-          </form>
-
-          <div className="pt-4 border-t border-white/10 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-neutral-300">
-              En caso de urgencia oprimir{" "}
-              <a
-                href="#emergencia"
-                onClick={activarAlertaEmergencia}
-                className="text-blue-400 font-bold underline hover:text-blue-300 transition cursor-pointer"
-              >
-                AQUÍ
-              </a>.
-            </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-white/10 text-neutral-400 uppercase tracking-wider text-[11px]">
+                  <th className="py-3 px-4">Nombre del Docente</th>
+                  <th className="py-3 px-4">Fecha</th>
+                  <th className="py-3 px-4">Hora</th>
+                  <th className="py-3 px-4">Método / Red</th>
+                  <th className="py-3 px-4">Estatus</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/10 text-neutral-200">
+                {historialAsistencias.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-neutral-400">
+                      {cargandoHistorial
+                        ? "Consultando registros de asistencia..."
+                        : "Aún no tienes asistencias registradas. Presiona 'Registrar Asistencia' estando dentro del campus TUP."}
+                    </td>
+                  </tr>
+                ) : (
+                  historialAsistencias.map((reg) => {
+                    const { fecha, hora } = formatearFechaHora(reg.fecha_hora);
+                    return (
+                      <tr key={reg.id} className="hover:bg-white/5 transition">
+                        <td className="py-3.5 px-4 font-semibold text-white">{nombreDocente}</td>
+                        <td className="py-3.5 px-4 font-mono text-neutral-300">{fecha}</td>
+                        <td className="py-3.5 px-4 font-mono text-amber-300 font-bold">{hora}</td>
+                        <td className="py-3.5 px-4 font-mono text-neutral-400">{reg.metodo}</td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            {reg.estado}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
+
+      {/* MODAL INCIDENCIAS (DESDE OPCIONES DEL DOCENTE -> INCIDENCIAS) */}
+      {vistaModalActiva === "incidencias" && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="max-w-2xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 md:p-8 space-y-5 text-white shadow-2xl my-8">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div>
+                <h3 className="text-lg font-extrabold text-white">
+                  Solicitudes, Justificaciones e Incidencias
+                </h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Cuestionario para notificar faltas, solicitar justificantes o reportar imprevistos en aula.
+                </p>
+              </div>
+              <button
+                onClick={() => setVistaModalActiva(null)}
+                className="text-neutral-400 hover:text-white font-bold text-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={manejarEnvioCuestionario} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                    1. ¿Qué deseas reportar o solicitar? *
+                  </label>
+                  <select
+                    value={motivoSolicitud}
+                    onChange={(e) => setMotivoSolicitud(e.target.value)}
+                    className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
+                    required
+                  >
+                    <option value="" className="bg-neutral-900 text-white">Seleccione una opción...</option>
+                    <option value="justificacion_falta" className="bg-neutral-900 text-white">Solicitar Justificante por Inasistencia / Salud</option>
+                    <option value="permiso_oficial" className="bg-neutral-900 text-white">Solicitud de Permiso Económico / Oficial</option>
+                    <option value="falla_tecnica" className="bg-neutral-900 text-white">Falla Técnica de Equipo / Proyector / Clima</option>
+                    <option value="problema_wifi" className="bg-neutral-900 text-white">Problema de Conexión a Red Wi-Fi TUP</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                    2. Fecha correspondiente del evento / falta
+                  </label>
+                  <input
+                    type="date"
+                    value={fechaEvento}
+                    onChange={(e) => setFechaEvento(e.target.value)}
+                    className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white focus:outline-none focus:border-[#7A1C2E] transition-all"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                  3. ¿Qué está sucediendo? (Pregunta Abierta) *
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder="Describe a detalle lo que sucede en el aula o el motivo de tu solicitud..."
+                  value={preguntaAbierta}
+                  onChange={(e) => setPreguntaAbierta(e.target.value)}
+                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 text-neutral-200">
+                  4. Observaciones o comentarios adicionales (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ej. Adjunto número de folio médico o número de equipo..."
+                  value={detalleAdicional}
+                  onChange={(e) => setDetalleAdicional(e.target.value)}
+                  className="w-full rounded-xl px-3.5 py-2.5 text-xs bg-black/60 border border-white/15 text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                {reporteEnviado ? (
+                  <span className="text-xs font-bold text-emerald-400">
+                    Cuestionario enviado a Administración correctamente.
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-neutral-400">
+                    Folio generado automáticamente
+                  </span>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVistaModalActiva(null)}
+                    className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition cursor-pointer"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={cargandoReporte}
+                    className="px-6 py-2.5 bg-[#7A1C2E] hover:bg-[#9E2A3F] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {cargandoReporte ? "Enviando..." : "Enviar Cuestionario"}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-neutral-300">
+                En caso de urgencia oprimir{" "}
+                <a
+                  href="#emergencia"
+                  onClick={activarAlertaEmergencia}
+                  className="text-blue-400 font-bold underline hover:text-blue-300 transition cursor-pointer"
+                >
+                  AQUÍ
+                </a>.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL HISTORIAL */}
       {vistaModalActiva === "historial" && (
@@ -526,14 +726,31 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
             {cargandoHistorial ? (
               <p className="text-xs text-neutral-400 py-8 text-center">Consultando registros...</p>
-            ) : (
+            ) : historialAsistencias.length === 0 ? (
               <div className="p-8 text-center space-y-2 bg-black/50 rounded-2xl border border-white/10 my-2">
-                <p className="font-bold text-amber-300 text-sm md:text-base leading-relaxed">
-                  Hazta que el admin asigne labor, te asignaremos tus asistencias
+                <p className="font-bold text-amber-300 text-sm">
+                  Sin registros de asistencia aún
                 </p>
                 <p className="text-xs text-neutral-400">
-                  El registro en tiempo real por red Wi-Fi y perímetro se habilitará automáticamente al vincular tu horario de grupo en el panel de administración.
+                  Tus marcaciones aparecerán aquí en cuanto registres tu asistencia en el campus TUP.
                 </p>
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto divide-y divide-white/10 text-xs">
+                {historialAsistencias.map((item) => {
+                  const { fecha, hora } = formatearFechaHora(item.fecha_hora);
+                  return (
+                    <div key={item.id} className="py-3 flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-white">{nombreDocente}</p>
+                        <p className="text-neutral-400 font-mono">{fecha} • {hora}</p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300">
+                        {item.estado}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -597,7 +814,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
             <div className="pt-2 flex justify-between items-center gap-2">
               <button
-                onClick={() => evaluarRedWifiReal(emailActivo, deviceId, false)}
+                onClick={() => evaluarRedWifiReal(emailActivo, deviceId, false, false)}
                 disabled={verificandoRed}
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-bold rounded-xl cursor-pointer transition disabled:opacity-50"
               >
@@ -628,7 +845,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 {fotoPerfil ? (
                   <img src={fotoPerfil} alt="Vista Previa" className="w-full h-full object-cover" />
                 ) : (
-                  session?.user?.name?.charAt(0) || "D"
+                  nombreDocente.charAt(0) || "D"
                 )}
               </div>
 
