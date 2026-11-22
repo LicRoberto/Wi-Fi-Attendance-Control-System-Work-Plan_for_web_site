@@ -15,7 +15,6 @@ interface RegistroAsistencia {
 
 interface RedWifi {
   ssid: string;
-  password: string;
   zona: string;
   activa: boolean;
   calibrada?: boolean;
@@ -46,7 +45,55 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [guardandoRed, setGuardandoRed] = useState(false);
   const [calibrandoSsid, setCalibrandoSsid] = useState<string | null>(null);
 
+  // --- Autenticación de administrador (token firmado emitido por el backend) ---
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [passwordAdmin, setPasswordAdmin] = useState("");
+  const [errorLoginAdmin, setErrorLoginAdmin] = useState("");
+  const [entrandoAdmin, setEntrandoAdmin] = useState(false);
+
+  const cerrarSesionAdmin = () => {
+    try { sessionStorage.removeItem("tup_admin_token"); } catch {}
+    setAdminToken(null);
+  };
+
+  const adminFetch = async (path: string, init: RequestInit = {}) => {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { ...(init.headers || {}), Authorization: `Bearer ${adminToken}` },
+    });
+    if (res.status === 401) cerrarSesionAdmin();
+    return res;
+  };
+
+  const manejarLoginAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEntrandoAdmin(true);
+    setErrorLoginAdmin("");
+    try {
+      const res = await fetch(`${API_URL}/api/admin/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: passwordAdmin }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        try { sessionStorage.setItem("tup_admin_token", data.token); } catch {}
+        setAdminToken(data.token);
+        setPasswordAdmin("");
+      } else if (res.status === 503) {
+        setErrorLoginAdmin("El servidor no tiene configurada la contraseña de administrador.");
+      } else {
+        setErrorLoginAdmin("Contraseña de administrador incorrecta.");
+      }
+    } catch {
+      setErrorLoginAdmin("No fue posible conectar con el servidor.");
+    } finally {
+      setEntrandoAdmin(false);
+    }
+  };
+
   const manejarCerrarSesion = async () => {
+    cerrarSesionAdmin();
     await signOut({ redirect: false });
     window.location.href = "/";
   };
@@ -54,7 +101,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const cargarTablaAdmin = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/asistencias`);
+      const res = await adminFetch("/api/admin/asistencias");
       if (res.ok) {
         const data = await res.json();
         setRegistros(data);
@@ -68,7 +115,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const cargarRedesWifi = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/redes-wifi`);
+      const res = await adminFetch("/api/admin/redes-wifi");
       if (res.ok) {
         const data = await res.json();
         setRedesWifi(data);
@@ -79,9 +126,18 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   };
 
   useEffect(() => {
+    try {
+      const guardado = sessionStorage.getItem("tup_admin_token");
+      if (guardado) setAdminToken(guardado);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!adminToken) return;
     cargarTablaAdmin();
     cargarRedesWifi();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminToken]);
 
   const handleAgregarRed = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,7 +145,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
     setGuardandoRed(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/redes-wifi`, {
+      const res = await adminFetch("/api/admin/redes-wifi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(nuevaRed),
@@ -118,7 +174,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         );
       });
 
-      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}/calibrar`, {
+      const res = await adminFetch(`/api/admin/redes-wifi/${encodeURIComponent(ssid)}/calibrar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -140,7 +196,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const handleResetRed = async (ssid: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}/reset`, {
+      const res = await adminFetch(`/api/admin/redes-wifi/${encodeURIComponent(ssid)}/reset`, {
         method: "POST",
       });
       if (res.ok) {
@@ -155,7 +211,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const handleEliminarRed = async (ssid: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/redes-wifi/${encodeURIComponent(ssid)}`, {
+      const res = await adminFetch(`/api/admin/redes-wifi/${encodeURIComponent(ssid)}`, {
         method: "DELETE",
       });
       if (res.ok) {
@@ -169,7 +225,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const handleCrearDocente = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_URL}/api/admin/docentes`, {
+      const res = await adminFetch("/api/admin/docentes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(nuevoDocente),
@@ -194,6 +250,50 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     const coincideEstado = filtroEstado === "TODOS" || reg.estado === filtroEstado;
     return coincideTexto && coincideEstado;
   });
+
+  if (!adminToken) {
+    return (
+      <main className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
+        <form
+          onSubmit={manejarLoginAdmin}
+          className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 w-full max-w-sm space-y-4"
+        >
+          <div>
+            <h1 className="text-lg font-bold text-slate-900">Acceso de Administrador</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Confirma la contraseña de administración para gestionar redes y asistencias.
+            </p>
+          </div>
+          <input
+            type="password"
+            required
+            autoFocus
+            placeholder="Contraseña de administrador"
+            value={passwordAdmin}
+            onChange={(e) => setPasswordAdmin(e.target.value)}
+            className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+          />
+          {errorLoginAdmin && <p className="text-xs font-semibold text-rose-600">{errorLoginAdmin}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={manejarCerrarSesion}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+            >
+              Salir
+            </button>
+            <button
+              type="submit"
+              disabled={entrandoAdmin}
+              className="flex-1 py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-bold rounded-lg transition cursor-pointer disabled:opacity-50"
+            >
+              {entrandoAdmin ? "Verificando..." : "Entrar"}
+            </button>
+          </div>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#F8FAFC] text-slate-800 pb-12">
@@ -471,7 +571,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                             ? red.enlaces_vinculados.join(", ")
                             : "Ninguna"}
                         </strong>
-                        {red.tiene_geo ? " (+ GPS Campus)" : ""}
+                        
                       </p>
                     </div>
 

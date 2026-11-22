@@ -57,6 +57,12 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const emailActivo = session?.user?.email || "docente.tup@tecplayacar.edu.mx";
   const nombreDocente = session?.user?.name || "Docente TUP";
 
+  // Prueba de identidad firmada por el servidor de Next.js (la verifica el backend).
+  const authHeaders = (extra: Record<string, string> = {}) => ({
+    ...extra,
+    Authorization: `Bearer ${session?.backendToken ?? ""}`,
+  });
+
   const manejarCerrarSesion = async () => {
     await signOut({ redirect: false });
     window.location.href = "/";
@@ -103,7 +109,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         ? `${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}&desde=${encodeURIComponent(corteLocal)}`
         : `${API_URL}/api/asistencias/historial?email=${encodeURIComponent(email)}`;
 
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         setHistorialAsistencias(Array.isArray(data) ? data : []);
@@ -120,7 +126,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     try {
       const res = await fetch(`${API_URL}/api/asistencias/historial/limpiar-vista`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ email: emailActivo }),
       });
       if (res.ok) {
@@ -208,7 +214,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
     try {
       const res = await fetch(
-        `${API_URL}/api/usuarios/me?email=${encodeURIComponent(email)}&nombre=${encodeURIComponent(nombreDocente)}&device_id=${encodeURIComponent(fingerprint)}`
+        `${API_URL}/api/usuarios/me?email=${encodeURIComponent(email)}&nombre=${encodeURIComponent(nombreDocente)}&device_id=${encodeURIComponent(fingerprint)}`,
+        { headers: authHeaders() }
       );
       if (res.ok) {
         const data = await res.json();
@@ -245,7 +252,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       const coords = await obtenerUbicacionBrowser();
       const res = await fetch(`${API_URL}/api/asistencias/auto-marcar`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           email,
           nombre: nombreDocente,
@@ -255,6 +262,19 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           forzar_manual: mostrarFeedbackManual,
         }),
       });
+
+      if (res.status === 401) {
+        setRedConectada(false);
+        setSsidDetectado("Sesión expirada");
+        setTokenRed("Sin token");
+        if (mostrarFeedbackManual) {
+          setMensajeRegistro({
+            tipo: "error",
+            texto: "Tu sesión expiró. Cierra sesión y vuelve a entrar para registrar asistencia.",
+          });
+        }
+        return;
+      }
 
       if (res.ok) {
         const data = await res.json();
@@ -364,7 +384,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     try {
       await fetch(`${API_URL}/api/incidencias/crear`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           email: emailActivo,
           motivo: motivoSolicitud,

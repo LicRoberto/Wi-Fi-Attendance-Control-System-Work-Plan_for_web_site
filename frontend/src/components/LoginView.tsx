@@ -6,18 +6,20 @@ import ThreadsBackground from "./ThreadsBackground";
 
 export default function LoginView() {
   const [numEmpleado, setNumEmpleado] = useState("");
+  const [password, setPassword] = useState("");
   const [errorSesion, setErrorSesion] = useState(false);
   const [cargando, setCargando] = useState(false);
 
   const manejarLoginEmpleado = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!numEmpleado.trim()) return;
+    if (!numEmpleado.trim() || !password) return;
 
     setCargando(true);
     setErrorSesion(false);
 
     const res = await signIn("credentials", {
       numEmpleado,
+      password,
       redirect: false,
     });
 
@@ -26,77 +28,6 @@ export default function LoginView() {
       setCargando(false);
     } else {
       window.location.href = "/";
-    }
-  };
-
-  // Función de Autenticación Biométrica Nativa (Verificación física en vivo)
-  const iniciarSesionBiometrica = async () => {
-    if (!window.PublicKeyCredential) {
-      alert("Tu dispositivo o navegador no cuenta con un sensor biométrico compatible.");
-      return;
-    }
-
-    setCargando(true);
-    setErrorSesion(false);
-
-    try {
-      const authBiometrica = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-      
-      if (!authBiometrica) {
-        alert("No se detectó un lector biométrico activo o configurado en este equipo.");
-        setCargando(false);
-        return;
-      }
-
-      // Desafío seguro para la lectura biométrica física
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
-
-      // Solicitud nativa al hardware (Activa el sensor de Huella / Face ID del celular/PC)
-      const credential = await navigator.credentials.create({
-        publicKey: {
-          challenge: challenge,
-          rp: {
-            name: "Control de Asistencia TUP",
-            id: window.location.hostname,
-          },
-          user: {
-            id: new Uint8Array(16),
-            name: "docente@tup.edu.mx",
-            displayName: "Docente TUP",
-          },
-          pubKeyCredParams: [
-            { alg: -7, type: "public-key" },
-            { alg: -257, type: "public-key" },
-          ],
-          timeout: 60000,
-          authenticatorSelection: {
-            authenticatorAttachment: "platform",
-            userVerification: "required",
-          },
-        },
-      });
-
-      // Si el sensor escaneó con éxito la huella/rostro en el hardware:
-      if (credential) {
-        const res = await signIn("credentials", {
-          numEmpleado: "DOC-2026-01",
-          redirect: false,
-        });
-
-        if (res?.error) {
-          setErrorSesion(true);
-        } else {
-          window.location.href = "/";
-        }
-      }
-    } catch (err: any) {
-      console.log("Autenticación biométrica cancelada o fallida:", err);
-      if (err.name !== "NotAllowedError") {
-        alert("No se pudo completar la verificación biométrica.");
-      }
-    } finally {
-      setCargando(false);
     }
   };
 
@@ -188,22 +119,11 @@ export default function LoginView() {
           {errorSesion && (
             <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-800/80 text-rose-200 text-xs flex items-center gap-2.5">
               <span className="text-base">⚠️</span>
-              <span>No se encontró el registro del empleado. Verifique los datos o use Google.</span>
+              <span>Número de empleado o contraseña incorrectos. Verifique los datos o use Google.</span>
             </div>
           )}
 
-          {/* OPCIÓN 1: ACCESO BIOMÉTRICO POR HUELLA / FACE ID */}
-          <button
-            type="button"
-            onClick={iniciarSesionBiometrica}
-            disabled={cargando}
-            className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
-          >
-            <span className="text-base">👆</span>
-            {cargando ? "Solicitando huella/sensor..." : "Entrar con Biometría"}
-          </button>
-
-          {/* OPCIÓN 2: ACCESO POR GOOGLE */}
+          {/* OPCIÓN 1: ACCESO POR GOOGLE */}
           <button
             type="button"
             onClick={() => signIn("google")}
@@ -238,7 +158,7 @@ export default function LoginView() {
             <div className="border-t border-white/10 w-full"></div>
           </div>
 
-          {/* OPCIÓN 3: INGRESO POR NO. EMPLEADO SIN CONTRASEÑA */}
+          {/* OPCIÓN 2: NO. DE EMPLEADO + CONTRASEÑA */}
           <form onSubmit={manejarLoginEmpleado} className="space-y-3">
             <div>
               <label className="block text-xs font-semibold text-neutral-300 mb-1">
@@ -246,9 +166,24 @@ export default function LoginView() {
               </label>
               <input
                 type="text"
-                placeholder="Ej. DOC-2026-01"
+                placeholder="Tu número de empleado"
                 value={numEmpleado}
                 onChange={(e) => setNumEmpleado(e.target.value)}
+                className="w-full bg-black/60 border border-white/15 rounded-xl px-4 py-2.5 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-neutral-300 mb-1">
+                Contraseña
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                placeholder="Tu contraseña"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-black/60 border border-white/15 rounded-xl px-4 py-2.5 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#7A1C2E] transition-all"
                 required
               />

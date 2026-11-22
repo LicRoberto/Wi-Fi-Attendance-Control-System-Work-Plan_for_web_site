@@ -12,6 +12,8 @@ class Usuario(Base):
     numero_empleado = Column(String, unique=True, index=True, nullable=True)
     rol = Column(String, default="docente")
     mac_address = Column(String, nullable=True)
+    # Hash scrypt de la contraseña (solo para login por número de empleado). Nunca texto plano.
+    password_hash = Column(String, nullable=True)
 
     asistencias = relationship("Asistencia", back_populates="usuario")
 
