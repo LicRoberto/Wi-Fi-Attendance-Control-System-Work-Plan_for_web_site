@@ -8,11 +8,9 @@ import DocenteDashboard from "@/components/DocenteDashboard";
 import AdminDashboard from "@/components/AdminDashboard";
 
 const TIEMPO_EXPIRACION_MS = 10 * 60 * 1000; // 10 Minutos
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [rolUsuario, setRolUsuario] = useState<string>("docente");
   const [, setMensajeSesion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,14 +35,6 @@ export default function Home() {
       const expirado = checkExpiracionSesion();
       if (!expirado) {
         localStorage.setItem("tup_last_active", Date.now().toString());
-
-        // Consultar el rol del usuario en la API pública
-        fetch(`${API_URL}/api/usuarios/me?email=${encodeURIComponent(session.user?.email || "")}`)
-          .then((res) => res.json())
-          .then((data) => {
-            if (data?.rol) setRolUsuario(data.rol);
-          })
-          .catch(() => setRolUsuario("docente"));
       }
     }
 
@@ -73,7 +63,13 @@ export default function Home() {
     return <LoginView />;
   }
 
-  if (rolUsuario === "admin") {
+  // El rol sale de la sesión de NextAuth (firmada en el servidor), no de una consulta
+  // sin autenticar al backend. ADMIN solo se concede con la cuenta de Google del administrador.
+  // Esto solo decide qué pantalla se dibuja: el acceso real a los datos de admin
+  // lo protege el backend con la contraseña de administrador y su token.
+  const rol = (session.user as { role?: string } | undefined)?.role;
+
+  if (rol === "ADMIN") {
     return <AdminDashboard session={session} />;
   }
 
