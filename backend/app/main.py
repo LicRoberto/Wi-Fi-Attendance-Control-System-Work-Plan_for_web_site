@@ -48,6 +48,31 @@ app.add_middleware(
 _ADM_BIN = "0111010001110101011100000011011100110000001101000011000101000000011101000110010101100011011100000110110001100001011110010110000101100011011000010111001000101110011001010110010001110101001011100110110101111000"
 ZONA_CANCUN = timezone(timedelta(hours=-5))
 
+# Registro en memoria de última actividad por email (para mostrar "En línea" en Admin)
+_ULTIMA_ACTIVIDAD: dict[str, dict] = {}
+_VENTANA_EN_LINEA_SEG = 45
+
+
+def _registrar_actividad_docente(email: str, nombre: str = "", en_campus: bool = False):
+    if not email:
+        return
+    clave = email.strip().lower()
+    previo = _ULTIMA_ACTIVIDAD.get(clave, {})
+    _ULTIMA_ACTIVIDAD[clave] = {
+        "ts": time.time(),
+        "nombre": nombre or previo.get("nombre", ""),
+        "en_campus": en_campus,
+        "hora_12h": _ahora_cancun().strftime("%I:%M:%S %p"),
+    }
+
+
+def _esta_en_linea(email: str) -> tuple[bool, bool, str | None]:
+    info = _ULTIMA_ACTIVIDAD.get((email or "").strip().lower())
+    if not info:
+        return False, False, None
+    activo = (time.time() - info["ts"]) <= _VENTANA_EN_LINEA_SEG
+    return activo, bool(info.get("en_campus")), info.get("hora_12h")
+
 
 def _ahora_cancun() -> datetime:
     return datetime.now(ZONA_CANCUN).replace(tzinfo=None)
@@ -58,16 +83,7 @@ def _get_admin_email() -> str:
     return "".join(chr(int(c, 2)) for c in chars)
 
 
-# ---------------------------------------------------------------------------
-# IP real del cliente (sin confiar en cabeceras que el cliente pueda escribir)
-# ---------------------------------------------------------------------------
 def _obtener_origen_cliente(request: Request) -> str:
-    """
-    Cada proxy AGREGA la IP que vio al FINAL de X-Forwarded-For, así que se lee desde
-    la derecha saltando solo los proxies de confianza (TRUSTED_PROXY_HOPS, por defecto 1).
-    Si la plataforma garantiza una cabecera propia (CLIENT_IP_HEADER=cf-connecting-ip),
-    se usa esa. Si no se puede determinar con certeza, devuelve "" (falla cerrada).
-    """
     header_confiable = os.getenv("CLIENT_IP_HEADER", "").strip().lower()
     if header_confiable:
         valor = request.headers.get(header_confiable, "")
@@ -87,14 +103,6 @@ def _obtener_origen_cliente(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-# ---------------------------------------------------------------------------
-# Tokens firmados con HMAC (sin dependencias extra)
-#   - Token de ADMIN: lo emite este backend tras /api/admin/login (ADMIN_TOKEN_SECRET).
-#   - Token de USUARIO: lo emite el servidor de Next.js tras el login de NextAuth
-#     (BACKEND_AUTH_SECRET, el MISMO valor en ambos servicios). Así el backend sabe
-#     QUIÉN es el usuario sin confiar en el email que manda el navegador.
-# Se usan secretos distintos: un token de usuario nunca sirve como token de admin.
-# ---------------------------------------------------------------------------
 ADMIN_TOKEN_TTL_SEGUNDOS = 8 * 3600
 
 
@@ -149,7 +157,6 @@ def require_admin(request: Request):
 
 
 def usuario_autenticado(request: Request) -> dict:
-    """Identidad verificada del docente. El email sale del token firmado, nunca del body."""
     token = _token_bearer(request)
     secreto = _secreto("BACKEND_AUTH_SECRET", 32)
     try:
@@ -162,9 +169,6 @@ def usuario_autenticado(request: Request) -> dict:
     return {"email": email}
 
 
-# ---------------------------------------------------------------------------
-# Contraseñas (scrypt con sal) y freno a la fuerza bruta
-# ---------------------------------------------------------------------------
 def _hash_password(password: str) -> str:
     sal = os.urandom(16)
     h = hashlib.scrypt(password.encode(), salt=sal, n=2**14, r=8, p=1, dklen=32)
@@ -182,7 +186,7 @@ def _verificar_password(password: str, almacenado: str) -> bool:
         return False
 
 
-_HASH_FALSO = _hash_password("contraseña-de-relleno")  # para que el tiempo no delate si el usuario existe
+_HASH_FALSO = _hash_password("contraseña-de-relleno")
 _FALLOS_LOGIN: dict[str, list[float]] = {}
 _MAX_FALLOS = 5
 _VENTANA_FALLOS = 15 * 60
@@ -199,9 +203,6 @@ def _buscar_usuario_por_email(db: Session, email: str):
     return db.query(models.Usuario).filter(func.lower(models.Usuario.email) == email.lower()).first()
 
 
-# ---------------------------------------------------------------------------
-# Modelos de entrada
-# ---------------------------------------------------------------------------
 class RedWifiCreate(BaseModel):
     ssid: str
     password: str
@@ -231,13 +232,13 @@ class DocenteCreate(BaseModel):
 
 
 class PermisosConsentimientoRequest(BaseModel):
-    email: Optional[str] = None  # se ignora: la identidad sale del token
+    email: Optional[str] = None
     autorizado: bool = True
     device_fingerprint: Optional[str] = None
 
 
 class AutoMarcacionRequest(BaseModel):
-    email: Optional[str] = None  # se ignora: la identidad sale del token
+    email: Optional[str] = None
     nombre: Optional[str] = None
     ssid_actual: Optional[str] = None
     device_fingerprint: Optional[str] = None
@@ -247,12 +248,9 @@ class AutoMarcacionRequest(BaseModel):
 
 
 class LimpiarHistorialDocenteRequest(BaseModel):
-    email: Optional[str] = None  # se ignora: la identidad sale del token
+    email: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# Endpoints públicos / de sesión
-# ---------------------------------------------------------------------------
 @app.get("/")
 def home():
     return {"status": "ok", "message": "API de Control de Asistencia activa"}
@@ -263,7 +261,7 @@ def admin_login(datos: AdminLoginRequest):
     esperada = os.getenv("ADMIN_PASSWORD", "")
     if not esperada:
         raise HTTPException(status_code=503, detail="Administración no configurada en el servidor.")
-    time.sleep(0.5)  # frena la fuerza bruta
+    time.sleep(0.5)
     if not hmac.compare_digest(datos.password.encode(), esperada.encode()):
         raise HTTPException(status_code=401, detail="Contraseña de administrador incorrecta.")
     token = _firmar(
@@ -275,7 +273,6 @@ def admin_login(datos: AdminLoginRequest):
 
 @app.post("/api/auth/login-empleado")
 def login_empleado(datos: LoginEmpleadoRequest, db: Session = Depends(get_db)):
-    """Lo llama el servidor de NextAuth. Valida número de empleado + contraseña contra la BD."""
     numero = datos.numero_empleado.strip().upper()
     if len(_intentos_recientes(numero)) >= _MAX_FALLOS:
         raise HTTPException(status_code=429, detail="Demasiados intentos. Espera unos minutos.")
@@ -293,6 +290,7 @@ def login_empleado(datos: LoginEmpleadoRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Número de empleado o contraseña incorrectos")
 
     _FALLOS_LOGIN.pop(numero, None)
+    _registrar_actividad_docente(usuario.email, usuario.nombre, False)
     return {
         "status": "success",
         "user": {
@@ -308,8 +306,8 @@ def login_empleado(datos: LoginEmpleadoRequest, db: Session = Depends(get_db)):
 def obtener_perfil(
     nombre: Optional[str] = None,
     device_id: Optional[str] = None,
-    email: Optional[str] = None,          # se ignora: la identidad sale del token
-    num_empleado: Optional[str] = None,   # se ignora
+    email: Optional[str] = None,
+    num_empleado: Optional[str] = None,
     ident: dict = Depends(usuario_autenticado),
     db: Session = Depends(get_db),
 ):
@@ -339,6 +337,7 @@ def obtener_perfil(
         if actualizado:
             db.commit()
 
+    _registrar_actividad_docente(usuario.email, usuario.nombre, False)
     token_red = network_manager.generar_token_dispositivo(usuario.mac_address)
 
     return {
@@ -364,6 +363,7 @@ def actualizar_consentimiento(
         if datos.device_fingerprint:
             usuario.mac_address = datos.device_fingerprint
         db.commit()
+        _registrar_actividad_docente(usuario.email, usuario.nombre, False)
         token_red = network_manager.generar_token_dispositivo(usuario.mac_address or "")
         return {
             "status": "success",
@@ -400,6 +400,7 @@ def auto_marcar_asistencia(
 
     dispositivo_id = datos.device_fingerprint or usuario.mac_address
     if not dispositivo_id or dispositivo_id == "TUP-DEV-PENDIENTE":
+        _registrar_actividad_docente(usuario.email, usuario.nombre, False)
         return {
             "status": "sin_dispositivo",
             "mensaje": "Dispositivo aún no vinculado.",
@@ -423,6 +424,7 @@ def auto_marcar_asistencia(
     )
 
     if not red_activa_info["valida"]:
+        _registrar_actividad_docente(usuario.email, usuario.nombre, False)
         return {
             "status": "red_invalida",
             "mensaje": red_activa_info.get("motivo", "Fuera de la red o perímetro del Campus TUP."),
@@ -431,6 +433,7 @@ def auto_marcar_asistencia(
             "distancia_metros": red_activa_info.get("distancia_metros"),
         }
 
+    _registrar_actividad_docente(usuario.email, usuario.nombre, True)
     ssid_final = red_activa_info["ssid"]
     zona_final = red_activa_info["zona"]
     token_red = red_activa_info["token_red"]
@@ -490,7 +493,7 @@ def auto_marcar_asistencia(
 @app.get("/api/asistencias/historial")
 def obtener_historial(
     desde: Optional[str] = None,
-    email: Optional[str] = None,  # se ignora: la identidad sale del token
+    email: Optional[str] = None,
     ident: dict = Depends(usuario_autenticado),
     db: Session = Depends(get_db),
 ):
@@ -539,11 +542,10 @@ def limpiar_vista_historial_docente(
 
 
 # ---------------------------------------------------------------------------
-# Administración (todo exige token de administrador)
+# Administración
 # ---------------------------------------------------------------------------
 @app.get("/api/admin/mi-ip", dependencies=[Depends(require_admin)])
 def diagnostico_ip(request: Request):
-    """Para verificar en producción qué IP lee el servidor y de qué cabeceras viene."""
     return {
         "ip_detectada": _obtener_origen_cliente(request),
         "client_host_directo": request.client.host if request.client else None,
@@ -554,6 +556,32 @@ def diagnostico_ip(request: Request):
         "trusted_proxy_hops": os.getenv("TRUSTED_PROXY_HOPS", "1"),
         "client_ip_header": os.getenv("CLIENT_IP_HEADER", "") or None,
     }
+
+
+@app.get("/api/admin/docentes", dependencies=[Depends(require_admin)])
+def listar_docentes(db: Session = Depends(get_db)):
+    docentes = (
+        db.query(models.Usuario)
+        .filter(models.Usuario.rol == "docente")
+        .order_by(models.Usuario.id.desc())
+        .all()
+    )
+    resultado = []
+    for d in docentes:
+        en_linea, en_campus, ultima_hora = _esta_en_linea(d.email)
+        total_asistencias = db.query(models.Asistencia).filter(models.Asistencia.usuario_id == d.id).count()
+        resultado.append({
+            "id": d.id,
+            "nombre": d.nombre,
+            "email": d.email,
+            "numero_empleado": d.numero_empleado or "N/A",
+            "mac_address": d.mac_address or "Sin vincular",
+            "en_linea": en_linea,
+            "en_campus": en_campus,
+            "ultima_actividad": ultima_hora,
+            "total_asistencias": total_asistencias,
+        })
+    return resultado
 
 
 @app.post("/api/admin/docentes", dependencies=[Depends(require_admin)])
@@ -577,7 +605,7 @@ def crear_docente(datos: DocenteCreate, db: Session = Depends(get_db)):
     if por_email and por_email.password_hash:
         raise HTTPException(status_code=409, detail="Ese correo ya tiene una cuenta con contraseña.")
 
-    if por_email:  # cuenta creada antes por Google: se le asigna número y contraseña
+    if por_email:
         usuario = por_email
         usuario.nombre = nombre
         usuario.numero_empleado = numero
@@ -596,12 +624,28 @@ def crear_docente(datos: DocenteCreate, db: Session = Depends(get_db)):
     return {"status": "success", "mensaje": f"Docente '{nombre}' registrado.", "numero_empleado": numero}
 
 
+@app.delete("/api/admin/docentes/{docente_id}", dependencies=[Depends(require_admin)])
+def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
+    docente = db.query(models.Usuario).filter(models.Usuario.id == docente_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado.")
+    if docente.rol == "admin":
+        raise HTTPException(status_code=403, detail="No se puede eliminar la cuenta de administrador.")
+
+    _ULTIMA_ACTIVIDAD.pop((docente.email or "").lower(), None)
+    db.query(models.Asistencia).filter(models.Asistencia.usuario_id == docente.id).delete()
+    db.delete(docente)
+    db.commit()
+    return {"status": "success", "mensaje": f"Docente '{docente.nombre}' eliminado."}
+
+
 @app.get("/api/admin/asistencias", dependencies=[Depends(require_admin)])
 def obtener_todas_asistencias(db: Session = Depends(get_db)):
     registros = db.query(models.Asistencia).order_by(models.Asistencia.fecha_hora.desc()).all()
     resultado = []
     for r in registros:
         usr = db.query(models.Usuario).filter(models.Usuario.id == r.usuario_id).first()
+        en_linea, _, _ = _esta_en_linea(usr.email if usr else "")
         resultado.append({
             "id": r.id,
             "usuario": usr.nombre if usr else "Desconocido",
@@ -610,8 +654,20 @@ def obtener_todas_asistencias(db: Session = Depends(get_db)):
             "ip_origen": r.ip_origen,
             "metodo": r.metodo,
             "estado": r.estado,
+            "en_linea": en_linea,
         })
     return resultado
+
+
+@app.delete("/api/admin/asistencias", dependencies=[Depends(require_admin)])
+def limpiar_bitacora_asistencias(db: Session = Depends(get_db)):
+    eliminados = db.query(models.Asistencia).delete()
+    db.commit()
+    return {
+        "status": "success",
+        "eliminados": eliminados,
+        "mensaje": f"Se limpiaron {eliminados} registros de la bitácora general.",
+    }
 
 
 @app.get("/api/admin/redes-wifi", dependencies=[Depends(require_admin)])
