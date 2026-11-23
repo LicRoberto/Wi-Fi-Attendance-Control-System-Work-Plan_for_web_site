@@ -51,7 +51,9 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [cargandoReporte, setCargandoReporte] = useState<boolean>(false);
 
   const menuRef = useRef<HTMLDivElement>(null);
-  const coordsActualesRef = useRef<{ lat: number; lon: number } | null>(null);
+  const coordsActualesRef = useRef<{ lat: number; lon: number; precision?: number } | null>(null);
+  const [fotoGuardando, setFotoGuardando] = useState(false);
+  const [fotoError, setFotoError] = useState("");
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
   const emailActivo = session?.user?.email || "docente.tup@tecplayacar.edu.mx";
@@ -85,13 +87,13 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     return devId;
   };
 
-  const obtenerUbicacionBrowser = (): Promise<{ lat: number; lon: number } | null> => {
+  const obtenerUbicacionBrowser = (): Promise<{ lat: number; lon: number; precision?: number } | null> => {
     return new Promise((resolve) => {
       if (coordsActualesRef.current) return resolve(coordsActualesRef.current);
       if (!("geolocation" in navigator)) return resolve(null);
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude, precision: pos.coords.accuracy };
           coordsActualesRef.current = coords;
           resolve(coords);
         },
@@ -182,6 +184,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           coordsActualesRef.current = {
             lat: pos.coords.latitude,
             lon: pos.coords.longitude,
+            precision: pos.coords.accuracy,
           };
           evaluarRedWifiReal(emailActivo, currentFingerprint, false, false);
         },
@@ -220,6 +223,12 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       if (res.ok) {
         const data = await res.json();
         setDeviceId(data.mac_address || fingerprint);
+        // La foto guardada en el servidor manda; si no hay, se usa la de la cuenta de Google.
+        if (data.foto) {
+          setFotoPerfil(data.foto);
+        } else if (session?.user?.image) {
+          setFotoPerfil(session.user.image);
+        }
         if (data.token_red) {
           setTokenRed(data.token_red);
         }
@@ -259,6 +268,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           device_fingerprint: fingerprint,
           lat: coords?.lat ?? null,
           lon: coords?.lon ?? null,
+          precision: coords?.precision ?? null,
           forzar_manual: mostrarFeedbackManual,
         }),
       });
@@ -412,14 +422,82 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     alert("URGENCIA REGISTRADA: Se ha notificado inmediatamente al área de Control Escolar y Administración del Campus TUP.");
   };
 
-  const manejarCambioFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFotoPerfil(reader.result as string);
+  // Reduce la imagen a un cuadrado de 256 px (JPEG) para que pese poco y quepa en la base de datos.
+  const redimensionarFoto = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const lado = 256;
+        const canvas = document.createElement("canvas");
+        canvas.width = lado;
+        canvas.height = lado;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(url);
+          return reject(new Error("canvas"));
+        }
+        const corte = Math.min(img.width, img.height);
+        const sx = (img.width - corte) / 2;
+        const sy = (img.height - corte) / 2;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, lado, lado);
+        ctx.drawImage(img, sx, sy, corte, corte, 0, 0, lado, lado);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
       };
-      reader.readAsDataURL(file);
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("imagen"));
+      };
+      img.src = url;
+    });
+
+  const manejarCambioFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setFotoError("");
+    if (!file.type.startsWith("image/")) {
+      setFotoError("Selecciona un archivo de imagen.");
+      return;
+    }
+    setFotoGuardando(true);
+    try {
+      const dataUrl = await redimensionarFoto(file);
+      const res = await fetch(`${API_URL}/api/usuarios/me/foto`, {
+        method: "PUT",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ foto: dataUrl }),
+      });
+      if (res.ok) {
+        setFotoPerfil(dataUrl);
+      } else if (res.status === 401) {
+        setFotoError("Tu sesión expiró. Cierra sesión y vuelve a entrar.");
+      } else {
+        setFotoError("No se pudo guardar la foto. Intenta con otra imagen.");
+      }
+    } catch {
+      setFotoError("No se pudo procesar la imagen.");
+    } finally {
+      setFotoGuardando(false);
+    }
+  };
+
+  const quitarFoto = async () => {
+    setFotoError("");
+    setFotoGuardando(true);
+    try {
+      const res = await fetch(`${API_URL}/api/usuarios/me/foto`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (res.ok) setFotoPerfil(session?.user?.image || "");
+      else setFotoError("No se pudo quitar la foto.");
+    } catch {
+      setFotoError("No se pudo conectar con el servidor.");
+    } finally {
+      setFotoGuardando(false);
     }
   };
 
@@ -569,7 +647,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
           <div className="w-9 h-9 rounded-full overflow-hidden border border-white/20 bg-neutral-800 flex items-center justify-center text-xs font-bold text-white">
             {fotoPerfil ? (
-              <img src={fotoPerfil} alt="Perfil" className="w-full h-full object-cover" />
+              <img src={fotoPerfil} alt="Perfil" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
             ) : (
               nombreDocente.charAt(0) || "D"
             )}
@@ -988,7 +1066,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
             <div className="flex flex-col items-center gap-4 py-2">
               <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-[#7A1C2E] bg-neutral-800 flex items-center justify-center text-2xl font-bold">
                 {fotoPerfil ? (
-                  <img src={fotoPerfil} alt="Vista Previa" className="w-full h-full object-cover" />
+                  <img src={fotoPerfil} alt="Vista Previa" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 ) : (
                   nombreDocente.charAt(0) || "D"
                 )}
@@ -1000,13 +1078,26 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 onChange={manejarCambioFoto}
                 id="upload-foto"
                 className="hidden"
+                disabled={fotoGuardando}
               />
               <label
                 htmlFor="upload-foto"
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 border border-white/15 rounded-xl text-xs font-bold transition cursor-pointer"
               >
-                Seleccionar Imagen
+                {fotoGuardando ? "Guardando..." : "Seleccionar Imagen"}
               </label>
+              <button
+                type="button"
+                onClick={quitarFoto}
+                disabled={fotoGuardando}
+                className="text-[11px] text-neutral-400 hover:text-white underline cursor-pointer"
+              >
+                Quitar mi foto
+              </button>
+              {fotoError && <p className="text-[11px] text-red-400 text-center">{fotoError}</p>}
+              <p className="text-[10px] text-neutral-500 text-center">
+                La foto se guarda en el servidor y la verá el área de administración.
+              </p>
             </div>
 
             <div className="pt-2 flex justify-end">
