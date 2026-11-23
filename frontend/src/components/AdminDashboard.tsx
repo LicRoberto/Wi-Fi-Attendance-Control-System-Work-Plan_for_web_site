@@ -326,6 +326,26 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     }
   };
 
+  const handleEliminarDocente = async (e: React.MouseEvent, id: number, nombre: string) => {
+    e.stopPropagation();
+    if (!confirm(`¿Seguro que deseas eliminar al docente "${nombre}" y todo su historial de asistencias?`)) return;
+    try {
+      const res = await adminFetch(`/api/admin/docentes/${id}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        if (docenteSelId === id) setDocenteSelId(null);
+        await cargarDocentes();
+        await cargarTablaAdmin();
+      } else {
+        const errData = await res.json().catch(() => null);
+        alert(errData?.detail || "No se pudo eliminar el docente.");
+      }
+    } catch (err) {
+      console.error("Error al eliminar docente", err);
+    }
+  };
+
   const registrosFiltrados = registros.filter((reg) => {
     const coincideTexto =
       reg.usuario.toLowerCase().includes(busqueda.toLowerCase()) ||
@@ -654,7 +674,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                             ? red.enlaces_vinculados.join(", ")
                             : "Ninguna"}
                         </strong>
-                        
                       </p>
                     </div>
 
@@ -745,11 +764,11 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                     );
                   })
                   .map((d) => (
-                    <li key={d.id}>
+                    <li key={d.id} className="flex items-center justify-between hover:bg-slate-50 transition pr-4">
                       <button
                         type="button"
                         onClick={() => setDocenteSelId(d.id)}
-                        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition cursor-pointer"
+                        className="flex-1 flex items-center gap-3 px-4 py-3 text-left min-w-0 cursor-pointer"
                       >
                         <span className="w-10 h-10 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center text-sm font-bold text-slate-600 shrink-0">
                           {d.foto ? (
@@ -777,6 +796,16 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                           {d.en_campus ? "En el campus" : d.en_linea ? "Fuera de rango" : "Sin conexión"}
                         </span>
                       </button>
+
+                      {d.rol !== "admin" && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleEliminarDocente(e, d.id, d.nombre)}
+                          className="ml-2 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition shrink-0 cursor-pointer"
+                        >
+                          Eliminar
+                        </button>
+                      )}
                     </li>
                   ))}
               </ul>
@@ -911,6 +940,18 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                   </div>
                 )}
               </div>
+
+              {d.rol !== "admin" && (
+                <div className="mt-4 pt-3 border-t border-slate-100 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={(e) => handleEliminarDocente(e, d.id, d.nombre)}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
+                  >
+                    Eliminar Docente
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         );
