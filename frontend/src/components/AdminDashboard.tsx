@@ -29,6 +29,7 @@ interface DocenteInfo {
   nombre: string;
   email: string;
   numero_empleado: string | null;
+  password_visible?: string | null;
   rol: string;
   foto: string | null;
   hora_llegada: string | null;
@@ -51,7 +52,6 @@ interface EstadoSistema {
   asistencias: number;
 }
 
-// "2026-11-23 08:05:12" (hora de Cancún, sin zona) -> "8:05 a. m."
 function formatoHora(valor: string | null): string {
   if (!valor) return "";
   const m = valor.match(/(\d{2}):(\d{2})/);
@@ -84,6 +84,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<"bitacora" | "redes" | "docentes" | "reportes">("bitacora");
   const [docentes, setDocentes] = useState<DocenteInfo[]>([]);
   const [docenteSelId, setDocenteSelId] = useState<number | null>(null);
+  const [mostrarPasswordDocente, setMostrarPasswordDocente] = useState(false);
   const [busquedaDocente, setBusquedaDocente] = useState("");
   const [estadoSistema, setEstadoSistema] = useState<EstadoSistema | null>(null);
   const [registros, setRegistros] = useState<RegistroAsistencia[]>([]);
@@ -99,7 +100,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [guardandoRed, setGuardandoRed] = useState(false);
   const [calibrandoSsid, setCalibrandoSsid] = useState<string | null>(null);
 
-  // --- Autenticación de administrador (token firmado emitido por el backend) ---
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [passwordAdmin, setPasswordAdmin] = useState("");
   const [errorLoginAdmin, setErrorLoginAdmin] = useState("");
@@ -213,13 +213,17 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken]);
 
-  // Mientras se ve la pestaña de docentes, se refresca la presencia cada 15 s.
   useEffect(() => {
     if (!adminToken || activeTab !== "docentes") return;
     const t = setInterval(cargarDocentes, 15000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken, activeTab]);
+
+  const abrirDetalleDocente = (id: number) => {
+    setMostrarPasswordDocente(false);
+    setDocenteSelId(id);
+  };
 
   const handleAgregarRed = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -317,9 +321,11 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         alert("Docente registrado exitosamente");
         setShowModalDocente(false);
         setNuevoDocente({ nombre: "", email: "", matricula: "", password: "" });
-        cargarDocentes();
+        await cargarDocentes();
+        await cargarEstadoSistema();
       } else {
-        alert("Error al registrar docente");
+        const errData = await res.json().catch(() => null);
+        alert(errData?.detail || "Error al registrar docente");
       }
     } catch (err) {
       console.error("Error de red al crear docente", err);
@@ -337,6 +343,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         if (docenteSelId === id) setDocenteSelId(null);
         await cargarDocentes();
         await cargarTablaAdmin();
+        await cargarEstadoSistema();
       } else {
         const errData = await res.json().catch(() => null);
         alert(errData?.detail || "No se pudo eliminar el docente.");
@@ -400,7 +407,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   return (
     <main className="min-h-screen bg-[#F8FAFC] text-slate-800 pb-12">
-      {/* HEADER INSTITUCIONAL */}
       <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-[#7A1C2E] text-white flex items-center justify-center font-bold">
@@ -426,7 +432,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       </header>
 
       <section className="max-w-6xl mx-auto p-8">
-        {/* CARDS METRICAS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Redes Institucionales</span>
@@ -449,7 +454,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         </div>
 
-        {/* NAVEGACIÓN POR PESTAÑAS */}
         <div className="flex border-b border-slate-200 mb-6 gap-6 overflow-x-auto">
           <button
             onClick={() => setActiveTab("bitacora")}
@@ -493,7 +497,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </button>
         </div>
 
-        {/* CONTENIDO DE PESTAÑA: BITÁCORA */}
         {activeTab === "bitacora" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -581,7 +584,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
-        {/* CONTENIDO DE PESTAÑA: REDES WI-FI TUP */}
         {activeTab === "redes" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -711,7 +713,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
-        {/* CONTENIDO DE PESTAÑA: DOCENTES */}
         {activeTab === "docentes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             {estadoSistema?.posiblemente_temporal && (
@@ -767,7 +768,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                     <li key={d.id} className="flex items-center justify-between hover:bg-slate-50 transition pr-4">
                       <button
                         type="button"
-                        onClick={() => setDocenteSelId(d.id)}
+                        onClick={() => abrirDetalleDocente(d.id)}
                         className="flex-1 flex items-center gap-3 px-4 py-3 text-left min-w-0 cursor-pointer"
                       >
                         <span className="w-10 h-10 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center text-sm font-bold text-slate-600 shrink-0">
@@ -813,7 +814,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
-        {/* CONTENIDO DE PESTAÑA: REPORTES */}
         {activeTab === "reportes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             <h3 className="text-lg font-bold text-slate-900 mb-2">Exportar Reportes Institucionales</h3>
@@ -845,7 +845,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             onClick={() => setDocenteSelId(null)}
           >
             <div
-              className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5"
+              className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5 max-h-[92vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-start gap-4">
@@ -909,7 +909,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                     <iframe
                       title={`Ubicación de ${d.nombre}`}
                       src={mapaSrc}
-                      className="w-full h-56 rounded-lg border border-slate-200"
+                      className="w-full h-52 rounded-lg border border-slate-200"
                       loading="lazy"
                     />
                     <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
@@ -927,10 +927,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                         Abrir mapa grande
                       </a>
                     </div>
-                    <p className="mt-1 text-[10px] text-slate-400">
-                      La posición la informa el navegador del docente (GPS); sirve de referencia y no sustituye la
-                      validación por red.
-                    </p>
                   </>
                 ) : (
                   <div className="h-24 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-center text-[11px] text-slate-500 px-4">
@@ -939,6 +935,53 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                       : "La ubicación solo se muestra mientras el docente está conectado a la red del campus."}
                   </div>
                 )}
+              </div>
+
+              {/* RECUADRO DE USUARIO / MATRÍCULA Y CONTRASEÑA CON ICONO DE OJITO */}
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Credenciales de Acceso
+                </p>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500">No. Docente / Usuario:</span>
+                  <span className="font-mono font-bold text-slate-900">
+                    {d.numero_empleado || d.email}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500">Contraseña:</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-slate-900 select-all">
+                      {d.password_visible
+                        ? mostrarPasswordDocente
+                          ? d.password_visible
+                          : "••••••••••••"
+                        : "Acceso vía Google / Sin clave local"}
+                    </span>
+                    {d.password_visible && (
+                      <button
+                        type="button"
+                        onClick={() => setMostrarPasswordDocente((v) => !v)}
+                        title={mostrarPasswordDocente ? "Ocultar contraseña" : "Ver contraseña"}
+                        aria-label={mostrarPasswordDocente ? "Ocultar contraseña" : "Ver contraseña"}
+                        className="p-1 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-200/70 transition cursor-pointer"
+                      >
+                        {mostrarPasswordDocente ? (
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                          </svg>
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {d.rol !== "admin" && (
