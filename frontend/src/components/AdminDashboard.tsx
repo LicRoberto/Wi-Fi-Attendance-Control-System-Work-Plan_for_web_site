@@ -11,7 +11,6 @@ interface RegistroAsistencia {
   ip_origen: string;
   metodo: string;
   estado: string;
-  en_linea?: boolean;
 }
 
 interface RedWifi {
@@ -25,16 +24,54 @@ interface RedWifi {
   coincide_actual?: boolean;
 }
 
-interface DocenteItem {
+interface DocenteInfo {
   id: number;
   nombre: string;
   email: string;
-  numero_empleado: string;
-  mac_address: string;
-  en_linea?: boolean;
-  en_campus?: boolean;
-  ultima_actividad?: string | null;
-  total_asistencias?: number;
+  numero_empleado: string | null;
+  rol: string;
+  foto: string | null;
+  hora_llegada: string | null;
+  segundos_desde_conexion: number | null;
+  en_linea: boolean;
+  en_campus: boolean;
+  ubicacion: {
+    lat: number;
+    lon: number;
+    precision_metros: number | null;
+    distancia_metros: number | null;
+  } | null;
+}
+
+interface EstadoSistema {
+  base_de_datos: string;
+  posiblemente_temporal: boolean;
+  advertencia: string | null;
+  usuarios: number;
+  asistencias: number;
+}
+
+// "2026-11-23 08:05:12" (hora de Cancún, sin zona) -> "8:05 a. m."
+function formatoHora(valor: string | null): string {
+  if (!valor) return "";
+  const m = valor.match(/(\d{2}):(\d{2})/);
+  if (!m) return valor;
+  let h = parseInt(m[1], 10);
+  const sufijo = h >= 12 ? "p. m." : "a. m.";
+  h = h % 12 === 0 ? 12 : h % 12;
+  return `${h}:${m[2]} ${sufijo}`;
+}
+
+function textoHace(seg: number | null): string {
+  if (seg === null) return "sin conexión registrada";
+  if (seg < 60) return `hace ${seg} s`;
+  if (seg < 3600) return `hace ${Math.floor(seg / 60)} min`;
+  if (seg < 86400) return `hace ${Math.floor(seg / 3600)} h`;
+  return `hace ${Math.floor(seg / 86400)} d`;
+}
+
+function iniciales(nombre: string): string {
+  return nombre.trim().charAt(0).toUpperCase() || "D";
 }
 
 interface AdminDashboardProps {
@@ -45,16 +82,15 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onr
 
 export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [activeTab, setActiveTab] = useState<"bitacora" | "redes" | "docentes" | "reportes">("bitacora");
+  const [docentes, setDocentes] = useState<DocenteInfo[]>([]);
+  const [docenteSelId, setDocenteSelId] = useState<number | null>(null);
+  const [busquedaDocente, setBusquedaDocente] = useState("");
+  const [estadoSistema, setEstadoSistema] = useState<EstadoSistema | null>(null);
   const [registros, setRegistros] = useState<RegistroAsistencia[]>([]);
   const [redesWifi, setRedesWifi] = useState<RedWifi[]>([]);
-  const [docentesLista, setDocentesLista] = useState<DocenteItem[]>([]);
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("TODOS");
   const [loading, setLoading] = useState(false);
-  const [limpiandoBitacora, setLimpiandoBitacora] = useState(false);
-
-  const [fechaInicioReporte, setFechaInicioReporte] = useState("");
-  const [fechaFinReporte, setFechaFinReporte] = useState("");
 
   const [showModalDocente, setShowModalDocente] = useState(false);
   const [nuevoDocente, setNuevoDocente] = useState({ nombre: "", email: "", matricula: "", password: "" });
@@ -63,6 +99,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [guardandoRed, setGuardandoRed] = useState(false);
   const [calibrandoSsid, setCalibrandoSsid] = useState<string | null>(null);
 
+  // --- Autenticación de administrador (token firmado emitido por el backend) ---
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [passwordAdmin, setPasswordAdmin] = useState("");
   const [errorLoginAdmin, setErrorLoginAdmin] = useState("");
@@ -145,12 +182,18 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const cargarDocentes = async () => {
     try {
       const res = await adminFetch("/api/admin/docentes");
-      if (res.ok) {
-        const data = await res.json();
-        setDocentesLista(data);
-      }
+      if (res.ok) setDocentes(await res.json());
     } catch (err) {
-      console.error("Error al obtener lista de docentes", err);
+      console.error("Error al obtener docentes", err);
+    }
+  };
+
+  const cargarEstadoSistema = async () => {
+    try {
+      const res = await adminFetch("/api/admin/estado-sistema");
+      if (res.ok) setEstadoSistema(await res.json());
+    } catch (err) {
+      console.error("Error al obtener estado del sistema", err);
     }
   };
 
@@ -166,101 +209,17 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     cargarTablaAdmin();
     cargarRedesWifi();
     cargarDocentes();
-
-    const interval = setInterval(() => {
-      cargarDocentes();
-      cargarTablaAdmin();
-    }, 15000);
-    return () => clearInterval(interval);
+    cargarEstadoSistema();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken]);
 
-  const descargarCsvDesdeRegistros = (lista: RegistroAsistencia[], nombreArchivo: string) => {
-    const escaparCsv = (valor: string | number | undefined) => {
-      const texto = String(valor ?? "").replace(/"/g, '""');
-      return `"${texto}"`;
-    };
-
-    const encabezados = [
-      "ID",
-      "Docente",
-      "Correo Institucional",
-      "Fecha y Hora",
-      "ID Dispositivo",
-      "Red / Zona",
-      "Estatus",
-    ];
-
-    const filas = lista.map((r) =>
-      [
-        escaparCsv(r.id),
-        escaparCsv(r.usuario),
-        escaparCsv(r.email),
-        escaparCsv(r.fecha_hora),
-        escaparCsv(r.ip_origen),
-        escaparCsv(r.metodo),
-        escaparCsv(r.estado),
-      ].join(",")
-    );
-
-    const contenidoCsv = "\uFEFF" + [encabezados.join(","), ...filas].join("\n");
-    const blob = new Blob([contenidoCsv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const enlace = document.createElement("a");
-    enlace.href = url;
-    enlace.download = nombreArchivo;
-    document.body.appendChild(enlace);
-    enlace.click();
-    document.body.removeChild(enlace);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleDescargarYBorrarBitacora = async () => {
-    if (registros.length === 0) {
-      alert("La bitácora ya está vacía, no hay registros para respaldar o borrar.");
-      return;
-    }
-
-    const confirmar = confirm(
-      `Se descargará un respaldo CSV con los ${registros.length} registros actuales en tu carpeta de Descargas y después se restablecerá la bitácora.\n\n¿Deseas continuar?`
-    );
-    if (!confirmar) return;
-
-    setLimpiandoBitacora(true);
-    try {
-      const fechaHoy = new Date().toISOString().slice(0, 10);
-      descargarCsvDesdeRegistros(registros, `respaldo_bitacora_tup_${fechaHoy}.csv`);
-
-      const res = await adminFetch("/api/admin/asistencias", { method: "DELETE" });
-      if (res.ok) {
-        setRegistros([]);
-        await cargarDocentes();
-        alert("Respaldo guardado en Descargas y bitácora restablecida correctamente.");
-      } else {
-        alert("Se descargó el respaldo, pero hubo un error al limpiar la base de datos.");
-      }
-    } catch (err) {
-      console.error("Error al respaldar y limpiar bitácora", err);
-    } finally {
-      setLimpiandoBitacora(false);
-    }
-  };
-
-  const handleDescargarReporteFiltrado = () => {
-    const filtradosPorFecha = registros.filter((r) => {
-      const fechaSolo = r.fecha_hora.slice(0, 10);
-      if (fechaInicioReporte && fechaSolo < fechaInicioReporte) return false;
-      if (fechaFinReporte && fechaSolo > fechaFinReporte) return false;
-      return true;
-    });
-
-    const sufijo =
-      fechaInicioReporte || fechaFinReporte
-        ? `${fechaInicioReporte || "inicio"}_a_${fechaFinReporte || "hoy"}`
-        : new Date().toISOString().slice(0, 10);
-
-    descargarCsvDesdeRegistros(filtradosPorFecha, `reporte_asistencias_tup_${sufijo}.csv`);
-  };
+  // Mientras se ve la pestaña de docentes, se refresca la presencia cada 15 s.
+  useEffect(() => {
+    if (!adminToken || activeTab !== "docentes") return;
+    const t = setInterval(cargarDocentes, 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminToken, activeTab]);
 
   const handleAgregarRed = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -358,36 +317,14 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         alert("Docente registrado exitosamente");
         setShowModalDocente(false);
         setNuevoDocente({ nombre: "", email: "", matricula: "", password: "" });
-        await cargarDocentes();
-        setActiveTab("docentes");
+        cargarDocentes();
       } else {
-        const errData = await res.json().catch(() => null);
-        alert(errData?.detail || "Error al registrar docente");
+        alert("Error al registrar docente");
       }
     } catch (err) {
       console.error("Error de red al crear docente", err);
     }
   };
-
-  const handleEliminarDocente = async (id: number, nombre: string) => {
-    if (!confirm(`¿Seguro que deseas eliminar al docente "${nombre}" y todo su historial de asistencias?`)) return;
-    try {
-      const res = await adminFetch(`/api/admin/docentes/${id}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        await cargarDocentes();
-        await cargarTablaAdmin();
-      } else {
-        const errData = await res.json().catch(() => null);
-        alert(errData?.detail || "No se pudo eliminar el docente");
-      }
-    } catch (err) {
-      console.error("Error al eliminar docente", err);
-    }
-  };
-
-  const docentesEnLineaCount = docentesLista.filter((d) => d.en_linea).length;
 
   const registrosFiltrados = registros.filter((reg) => {
     const coincideTexto =
@@ -443,6 +380,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   return (
     <main className="min-h-screen bg-[#F8FAFC] text-slate-800 pb-12">
+      {/* HEADER INSTITUCIONAL */}
       <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-[#7A1C2E] text-white flex items-center justify-center font-bold">
@@ -468,18 +406,12 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       </header>
 
       <section className="max-w-6xl mx-auto p-8">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        {/* CARDS METRICAS */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Redes Institucionales</span>
             <p className="text-xl font-bold text-emerald-600 mt-2 flex items-center gap-2">
               <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span> {redesWifi.length} Redes Codificadas
-            </p>
-          </div>
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Docentes en Línea</span>
-            <p className="text-xl font-bold text-emerald-600 mt-2 flex items-center gap-2">
-              <span className={`w-3 h-3 rounded-full ${docentesEnLineaCount > 0 ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`}></span>
-              {docentesEnLineaCount} de {docentesLista.length} Activos
             </p>
           </div>
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
@@ -497,6 +429,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         </div>
 
+        {/* NAVEGACIÓN POR PESTAÑAS */}
         <div className="flex border-b border-slate-200 mb-6 gap-6 overflow-x-auto">
           <button
             onClick={() => setActiveTab("bitacora")}
@@ -526,7 +459,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 : "text-slate-500 hover:text-slate-800"
             }`}
           >
-            Gestión de Docentes ({docentesLista.length})
+            Gestión de Docentes
           </button>
           <button
             onClick={() => setActiveTab("reportes")}
@@ -540,9 +473,10 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </button>
         </div>
 
+        {/* CONTENIDO DE PESTAÑA: BITÁCORA */}
         {activeTab === "bitacora" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Bitácora de Asistencias Generales</h2>
                 <p className="text-xs text-slate-500 mt-1">
@@ -550,7 +484,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-3">
                 <input
                   type="text"
                   placeholder="Buscar docente o correo..."
@@ -571,16 +505,9 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 <button
                   onClick={cargarTablaAdmin}
                   disabled={loading}
-                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
                 >
                   {loading ? "..." : "Actualizar"}
-                </button>
-                <button
-                  onClick={handleDescargarYBorrarBitacora}
-                  disabled={limpiandoBitacora || registros.length === 0}
-                  className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50"
-                >
-                  {limpiandoBitacora ? "Respaldando..." : "Descargar y Borrar Historial"}
                 </button>
               </div>
             </div>
@@ -607,15 +534,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                   ) : (
                     registrosFiltrados.map((reg) => (
                       <tr key={reg.id} className="hover:bg-slate-50 transition">
-                        <td className="py-3 px-4 font-semibold text-slate-900">
-                          <div className="flex items-center gap-2">
-                            <span
-                              title={reg.en_linea ? "En línea ahora" : "Desconectado"}
-                              className={`w-2 h-2 rounded-full ${reg.en_linea ? "bg-emerald-500" : "bg-slate-300"}`}
-                            ></span>
-                            <span>{reg.usuario}</span>
-                          </div>
-                        </td>
+                        <td className="py-3 px-4 font-semibold text-slate-900">{reg.usuario}</td>
                         <td className="py-3 px-4 text-slate-500">{reg.email}</td>
                         <td className="py-3 px-4">{reg.fecha_hora}</td>
                         <td className="py-3 px-4 text-xs font-mono font-bold text-slate-700">{reg.ip_origen}</td>
@@ -642,6 +561,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* CONTENIDO DE PESTAÑA: REDES WI-FI TUP */}
         {activeTab === "redes" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -734,6 +654,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                             ? red.enlaces_vinculados.join(", ")
                             : "Ninguna"}
                         </strong>
+                        
                       </p>
                     </div>
 
@@ -771,22 +692,35 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* CONTENIDO DE PESTAÑA: DOCENTES */}
         {activeTab === "docentes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+            {estadoSistema?.posiblemente_temporal && (
+              <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                <p className="font-bold mb-1">Los datos podrían perderse al reiniciar el servidor</p>
+                <p>
+                  El backend usa un archivo SQLite temporal. Configura la variable DATABASE_URL (PostgreSQL) en Render
+                  para que docentes, fotos y asistencias se conserven.
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Catálogo de Docentes y Estado en Línea</h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Visualiza todos los profesores registrados, quién tiene sesión abierta en tiempo real y elimina cuentas.
+                <h3 className="text-lg font-bold text-slate-900">Gestión de Docentes</h3>
+                <p className="text-xs text-slate-500">
+                  {docentes.length} registrados · {docentes.filter((d) => d.en_campus).length} en el campus ahora.
+                  Haz clic en un docente para ver su detalle.
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={cargarDocentes}
-                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
-                >
-                  Actualizar
-                </button>
+                <input
+                  type="text"
+                  value={busquedaDocente}
+                  onChange={(e) => setBusquedaDocente(e.target.value)}
+                  placeholder="Buscar nombre, correo o matrícula"
+                  className="px-3 py-2 text-xs border border-slate-200 rounded-lg w-56 focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                />
                 <button
                   onClick={() => setShowModalDocente(true)}
                   className="px-4 py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-semibold rounded-lg transition cursor-pointer"
@@ -796,121 +730,193 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
-                    <th className="py-3 px-4">Estado</th>
-                    <th className="py-3 px-4">Nombre</th>
-                    <th className="py-3 px-4">Correo Institucional</th>
-                    <th className="py-3 px-4">No. Empleado</th>
-                    <th className="py-3 px-4">Dispositivo</th>
-                    <th className="py-3 px-4 text-center">Marcaciones</th>
-                    <th className="py-3 px-4 text-right">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {docentesLista.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="py-6 text-center text-slate-400">
-                        No hay docentes registrados todavía.
-                      </td>
-                    </tr>
-                  ) : (
-                    docentesLista.map((doc) => (
-                      <tr key={doc.id} className="hover:bg-slate-50 transition">
-                        <td className="py-3 px-4">
-                          {doc.en_linea ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-full bg-emerald-100 text-emerald-800">
-                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                              {doc.en_campus ? "EN LÍNEA (CAMPUS)" : "EN LÍNEA"}
-                            </span>
+            {docentes.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-10">Todavía no hay docentes registrados.</p>
+            ) : (
+              <ul className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                {docentes
+                  .filter((d) => {
+                    const q = busquedaDocente.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      d.nombre.toLowerCase().includes(q) ||
+                      d.email.toLowerCase().includes(q) ||
+                      (d.numero_empleado || "").toLowerCase().includes(q)
+                    );
+                  })
+                  .map((d) => (
+                    <li key={d.id}>
+                      <button
+                        type="button"
+                        onClick={() => setDocenteSelId(d.id)}
+                        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition cursor-pointer"
+                      >
+                        <span className="w-10 h-10 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center text-sm font-bold text-slate-600 shrink-0">
+                          {d.foto ? (
+                            <img src={d.foto} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                           ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-full bg-slate-100 text-slate-500">
-                              <span className="w-2 h-2 rounded-full bg-slate-400"></span>
-                              Desconectado
-                            </span>
+                            iniciales(d.nombre)
                           )}
-                        </td>
-                        <td className="py-3 px-4 font-semibold text-slate-900">{doc.nombre}</td>
-                        <td className="py-3 px-4 text-slate-500">{doc.email}</td>
-                        <td className="py-3 px-4 font-mono text-xs font-bold text-slate-700">{doc.numero_empleado}</td>
-                        <td className="py-3 px-4 font-mono text-xs text-slate-500">{doc.mac_address}</td>
-                        <td className="py-3 px-4 text-center font-bold text-slate-700">{doc.total_asistencias ?? 0}</td>
-                        <td className="py-3 px-4 text-right">
-                          <button
-                            onClick={() => handleEliminarDocente(doc.id, doc.nombre)}
-                            className="px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
-                          >
-                            Eliminar
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-sm font-semibold text-slate-900 truncate">{d.nombre}</span>
+                          <span className="block text-[11px] text-slate-500 truncate">
+                            {d.numero_empleado ? `Matrícula ${d.numero_empleado} · ` : ""}
+                            {d.email}
+                          </span>
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-1 rounded-full shrink-0 ${
+                            d.en_campus
+                              ? "bg-emerald-100 text-emerald-700"
+                              : d.en_linea
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {d.en_campus ? "En el campus" : d.en_linea ? "Fuera de rango" : "Sin conexión"}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
         )}
 
+        {/* CONTENIDO DE PESTAÑA: REPORTES */}
         {activeTab === "reportes" && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-6">
-            <div>
-              <h3 className="text-lg font-bold text-slate-900 mb-1">Exportar Reportes Institucionales</h3>
-              <p className="text-xs text-slate-500">
-                Descarga un archivo CSV compatible con Excel con todas las asistencias registradas (opcionalmente filtrado por rango de fechas).
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-4 items-center">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Desde</label>
-                <input
-                  type="date"
-                  value={fechaInicioReporte}
-                  onChange={(e) => setFechaInicioReporte(e.target.value)}
-                  className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Hasta</label>
-                <input
-                  type="date"
-                  value={fechaFinReporte}
-                  onChange={(e) => setFechaFinReporte(e.target.value)}
-                  className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
-                />
-              </div>
-              <div className="pt-4">
-                <button
-                  onClick={handleDescargarReporteFiltrado}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
-                >
-                  Descargar Reporte (CSV)
-                </button>
-              </div>
-            </div>
-
-            <div className="border-t border-slate-100 pt-4">
-              <p className="text-xs font-semibold text-slate-600 mb-2">
-                Docentes registrados incluidos en el sistema ({docentesLista.length}):
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {docentesLista.map((d) => (
-                  <span
-                    key={d.id}
-                    className="px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-xs font-medium"
-                  >
-                    {d.nombre} ({d.numero_empleado})
-                  </span>
-                ))}
-              </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+            <h3 className="text-lg font-bold text-slate-900 mb-2">Exportar Reportes Institucionales</h3>
+            <p className="text-xs text-slate-500 mb-6">Genera un archivo Excel/CSV con el historial de asistencias.</p>
+            <div className="flex gap-4 items-center">
+              <input type="date" className="px-3 py-2 text-xs border border-slate-200 rounded-lg" />
+              <span className="text-xs text-slate-400">a</span>
+              <input type="date" className="px-3 py-2 text-xs border border-slate-200 rounded-lg" />
+              <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer">
+                Descargar Reporte (CSV)
+              </button>
             </div>
           </div>
         )}
       </section>
 
+      {/* PANEL DE DETALLE DEL DOCENTE */}
+      {(() => {
+        const d = docentes.find((x) => x.id === docenteSelId);
+        if (!d) return null;
+        const u = d.ubicacion;
+        const delta = 0.0012;
+        const mapaSrc = u
+          ? `https://www.openstreetmap.org/export/embed.html?bbox=${u.lon - delta},${u.lat - delta},${u.lon + delta},${u.lat + delta}&layer=mapnik&marker=${u.lat},${u.lon}`
+          : null;
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+            onClick={() => setDocenteSelId(null)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start gap-4">
+                <div className="w-20 h-20 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center text-2xl font-bold text-slate-600 shrink-0 border border-slate-200">
+                  {d.foto ? (
+                    <img src={d.foto} alt={d.nombre} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                  ) : (
+                    iniciales(d.nombre)
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">{d.nombre}</h3>
+                  <p className="text-xs text-slate-600 mt-1">
+                    Matrícula: <span className="font-semibold">{d.numero_empleado || "sin matrícula"}</span>
+                  </p>
+                  <p className="text-[11px] text-slate-500 truncate">{d.email}</p>
+                </div>
+                <button
+                  onClick={() => setDocenteSelId(null)}
+                  className="text-slate-400 hover:text-slate-700 font-bold text-lg cursor-pointer"
+                  aria-label="Cerrar"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-4 text-xs text-slate-700">
+                {d.hora_llegada ? (
+                  <p>
+                    Llegó hoy a las <span className="font-bold">{formatoHora(d.hora_llegada)}</span>
+                  </p>
+                ) : (
+                  <p className="text-slate-500">Sin registro de llegada hoy.</p>
+                )}
+              </div>
+
+              <div className="mt-2">
+                <span
+                  className={`inline-block text-[11px] font-bold px-2.5 py-1 rounded-full ${
+                    d.en_campus
+                      ? "bg-emerald-100 text-emerald-700"
+                      : d.en_linea
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {d.en_campus
+                    ? "Dentro de la red del campus"
+                    : d.en_linea
+                    ? "Fuera de la red del campus"
+                    : "Sin conexión reciente"}
+                </span>
+                <span className="ml-2 text-[11px] text-slate-400">
+                  Última señal: {textoHace(d.segundos_desde_conexion)}
+                </span>
+              </div>
+
+              <div className="mt-4">
+                {mapaSrc && u ? (
+                  <>
+                    <iframe
+                      title={`Ubicación de ${d.nombre}`}
+                      src={mapaSrc}
+                      className="w-full h-56 rounded-lg border border-slate-200"
+                      loading="lazy"
+                    />
+                    <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
+                      <span>
+                        {u.lat.toFixed(5)}, {u.lon.toFixed(5)}
+                        {u.precision_metros != null ? ` · precisión ±${Math.round(u.precision_metros)} m` : ""}
+                        {u.distancia_metros != null ? ` · a ${Math.round(u.distancia_metros)} m del campus` : ""}
+                      </span>
+                      <a
+                        href={`https://www.openstreetmap.org/?mlat=${u.lat}&mlon=${u.lon}#map=18/${u.lat}/${u.lon}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#7A1C2E] font-semibold underline"
+                      >
+                        Abrir mapa grande
+                      </a>
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      La posición la informa el navegador del docente (GPS); sirve de referencia y no sustituye la
+                      validación por red.
+                    </p>
+                  </>
+                ) : (
+                  <div className="h-24 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-center text-[11px] text-slate-500 px-4">
+                    {d.en_campus
+                      ? "Está en la red del campus, pero su dispositivo no ha compartido la ubicación."
+                      : "La ubicación solo se muestra mientras el docente está conectado a la red del campus."}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL CREAR DOCENTE */}
       {showModalDocente && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-6">
@@ -947,11 +953,10 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Contraseña Inicial (mín. 8 caracteres)</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Contraseña Inicial</label>
                 <input
                   type="password"
                   required
-                  minLength={8}
                   value={nuevoDocente.password}
                   onChange={(e) => setNuevoDocente({ ...nuevoDocente, password: e.target.value })}
                   className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
