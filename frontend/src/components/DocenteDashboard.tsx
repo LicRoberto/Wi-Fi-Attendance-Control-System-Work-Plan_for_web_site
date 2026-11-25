@@ -16,6 +16,27 @@ interface RegistroAsistenciaDocente {
   estado: string;
 }
 
+interface ClaseDocente {
+  id: number;
+  materia: string;
+  aula: string;
+  dia_semana: string;
+  horario: string;
+}
+
+interface IncidenciaDocente {
+  id: number;
+  motivo: string;
+  fecha_evento: string | null;
+  descripcion: string;
+  estado: string;
+  respuesta_admin: string | null;
+  fecha_creacion: string;
+  fecha_respuesta: string | null;
+}
+
+const DIAS_ESCOLARES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
 export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [menuTupAbierto, setMenuTupAbierto] = useState<boolean>(false);
   const [vistaModalActiva, setVistaModalActiva] = useState<
@@ -39,16 +60,22 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const [cargandoHistorial, setCargandoHistorial] = useState<boolean>(false);
   const [limpiandoHistorial, setLimpiandoHistorial] = useState<boolean>(false);
 
-  const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(false);
-  const [reloj12H, setReloj12H] = useState<string>("");
-  const [fotoPerfil, setFotoPerfil] = useState<string>("");
+  // Horario escolar semanal
+  const [misClases, setMisClases] = useState<ClaseDocente[]>([]);
+  const [cargandoClases, setCargandoClases] = useState<boolean>(false);
 
+  // Incidencias y respuestas del administrador
+  const [misIncidencias, setMisIncidencias] = useState<IncidenciaDocente[]>([]);
   const [motivoSolicitud, setMotivoSolicitud] = useState<string>("");
   const [fechaEvento, setFechaEvento] = useState<string>("");
   const [preguntaAbierta, setPreguntaAbierta] = useState<string>("");
   const [detalleAdicional, setDetalleAdicional] = useState<string>("");
   const [reporteEnviado, setReporteEnviado] = useState<boolean>(false);
   const [cargandoReporte, setCargandoReporte] = useState<boolean>(false);
+
+  const [mostrarModalPermisos, setMostrarModalPermisos] = useState<boolean>(false);
+  const [reloj12H, setReloj12H] = useState<string>("");
+  const [fotoPerfil, setFotoPerfil] = useState<string>("");
 
   const menuRef = useRef<HTMLDivElement>(null);
   const coordsActualesRef = useRef<{ lat: number; lon: number; precision?: number } | null>(null);
@@ -59,7 +86,6 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
   const emailActivo = session?.user?.email || "docente.tup@tecplayacar.edu.mx";
   const nombreDocente = session?.user?.name || "Docente TUP";
 
-  // Prueba de identidad firmada por el servidor de Next.js (la verifica el backend).
   const authHeaders = (extra: Record<string, string> = {}) => ({
     ...extra,
     Authorization: `Bearer ${session?.backendToken ?? ""}`,
@@ -123,6 +149,33 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
   };
 
+  const cargarMisClases = async () => {
+    setCargandoClases(true);
+    try {
+      const res = await fetch(`${API_URL}/api/clases/mis-clases`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setMisClases(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Error al cargar horario escolar", err);
+    } finally {
+      setCargandoClases(false);
+    }
+  };
+
+  const cargarMisIncidencias = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/incidencias/mis-incidencias`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setMisIncidencias(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Error al cargar incidencias", err);
+    }
+  };
+
   const manejarRestablecerHistorial = async () => {
     setLimpiandoHistorial(true);
     try {
@@ -175,6 +228,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
     cargarDatosPerfilReal(emailActivo, currentFingerprint);
     cargarHistorialReal(emailActivo);
+    cargarMisClases();
+    cargarMisIncidencias();
     evaluarRedWifiReal(emailActivo, currentFingerprint, true, false);
 
     let watchId: number | null = null;
@@ -212,6 +267,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       clearInterval(intervalSensor);
       document.removeEventListener("mousedown", handleClickOutside);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [emailActivo]);
 
   const cargarDatosPerfilReal = async (email: string, fingerprint: string) => {
@@ -223,21 +279,14 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       if (res.ok) {
         const data = await res.json();
         setDeviceId(data.mac_address || fingerprint);
-        // La foto guardada en el servidor manda; si no hay, se usa la de la cuenta de Google.
         if (data.foto) {
           setFotoPerfil(data.foto);
         } else if (session?.user?.image) {
           setFotoPerfil(session.user.image);
         }
-        if (data.token_red) {
-          setTokenRed(data.token_red);
-        }
-        if (data.aula_asignada) {
-          setAulaAsignada(data.aula_asignada);
-        }
-        if (data.horario_asignado) {
-          setHorarioAulaAsignado(data.horario_asignado);
-        }
+        if (data.token_red) setTokenRed(data.token_red);
+        if (data.aula_asignada) setAulaAsignada(data.aula_asignada);
+        if (data.horario_asignado) setHorarioAulaAsignado(data.horario_asignado);
       }
     } catch (err) {
       console.error("Error al obtener perfil", err);
@@ -293,12 +342,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         setSsidDetectado(data.ssid_actual || (activa ? "TUP" : "Fuera de Campus"));
         setTokenRed(data.token_red || "Sin token (Fuera de rango)");
         setDistanciaCampus(typeof data.distancia_metros === "number" ? data.distancia_metros : null);
-        if (data.aula_asignada) {
-          setAulaAsignada(data.aula_asignada);
-        }
-        if (data.horario_asignado) {
-          setHorarioAulaAsignado(data.horario_asignado);
-        }
+        if (data.aula_asignada) setAulaAsignada(data.aula_asignada);
+        if (data.horario_asignado) setHorarioAulaAsignado(data.horario_asignado);
 
         if (activa) {
           await cargarHistorialReal(email);
@@ -326,7 +371,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           setMensajeRegistro({ tipo: "error", texto: "Error de conexión con el servidor TUP." });
         }
       }
-    } catch (err) {
+    } catch {
       if (reintento) {
         setTimeout(() => evaluarRedWifiReal(email, fingerprint, false, mostrarFeedbackManual), 5000);
       } else {
@@ -392,7 +437,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
 
     setCargandoReporte(true);
     try {
-      await fetch(`${API_URL}/api/incidencias/crear`, {
+      const res = await fetch(`${API_URL}/api/incidencias/crear`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
@@ -401,15 +446,19 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           fecha_evento: fechaEvento,
           descripcion: preguntaAbierta,
           observaciones: detalleAdicional,
+          urgente: false,
         }),
       });
 
-      setReporteEnviado(true);
-      setMotivoSolicitud("");
-      setFechaEvento("");
-      setPreguntaAbierta("");
-      setDetalleAdicional("");
-      setTimeout(() => setReporteEnviado(false), 4000);
+      if (res.ok) {
+        setReporteEnviado(true);
+        setMotivoSolicitud("");
+        setFechaEvento("");
+        setPreguntaAbierta("");
+        setDetalleAdicional("");
+        await cargarMisIncidencias();
+        setTimeout(() => setReporteEnviado(false), 4000);
+      }
     } catch (error) {
       console.error("Error al procesar solicitud", error);
     } finally {
@@ -417,12 +466,26 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
     }
   };
 
-  const activarAlertaEmergencia = (e: React.MouseEvent) => {
+  const activarAlertaEmergencia = async (e: React.MouseEvent) => {
     e.preventDefault();
-    alert("URGENCIA REGISTRADA: Se ha notificado inmediatamente al área de Control Escolar y Administración del Campus TUP.");
+    try {
+      await fetch(`${API_URL}/api/incidencias/crear`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          email: emailActivo,
+          motivo: "urgencia_inmediata",
+          fecha_evento: new Date().toISOString().split("T")[0],
+          descripcion: "Alerta de urgencia activada por el docente desde el portal institucional.",
+          observaciones: `Aula: ${aulaAsignada}`,
+          urgente: true,
+        }),
+      });
+      await cargarMisIncidencias();
+    } catch {}
+    alert("URGENCIA REGISTRADA: Se ha notificado inmediatamente a la campana de Administración del Campus TUP.");
   };
 
-  // Reduce la imagen a un cuadrado de 256 px (JPEG) para que pese poco y quepa en la base de datos.
   const redimensionarFoto = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
@@ -500,6 +563,21 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
       setFotoGuardando(false);
     }
   };
+
+  const diaActualSemana = (() => {
+    const idx = new Date().getDay();
+    const map: Record<number, string> = {
+      1: "Lunes",
+      2: "Martes",
+      3: "Miércoles",
+      4: "Jueves",
+      5: "Viernes",
+      6: "Sábado",
+    };
+    return map[idx] || "Lunes";
+  })();
+
+  const respuestasPendientes = misIncidencias.filter((i) => i.respuesta_admin).length;
 
   return (
     <main className="relative min-h-screen text-white font-sans bg-gradient-to-br from-neutral-950 via-neutral-900 to-stone-950">
@@ -585,10 +663,19 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                 </button>
 
                 <button
-                  onClick={() => { setVistaModalActiva("incidencias"); setMenuTupAbierto(false); }}
-                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center transition cursor-pointer"
+                  onClick={() => {
+                    cargarMisIncidencias();
+                    setVistaModalActiva("incidencias");
+                    setMenuTupAbierto(false);
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl hover:bg-white/10 text-white font-medium flex items-center justify-between transition cursor-pointer"
                 >
-                  Incidencias
+                  <span>Incidencias</span>
+                  {respuestasPendientes > 0 && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      {respuestasPendientes} resp.
+                    </span>
+                  )}
                 </button>
 
                 <button
@@ -662,8 +749,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       </header>
 
-      {/* VISTA PRINCIPAL: TECPLAYACAR + REGISTRO DE ASISTENCIAS */}
-      <section className="relative z-10 max-w-4xl mx-auto p-4 md:p-8 space-y-6">
+      {/* VISTA PRINCIPAL */}
+      <section className="relative z-10 max-w-7xl mx-auto p-4 md:p-8 space-y-6">
         <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
@@ -680,7 +767,8 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               <span className="font-mono text-amber-300">{deviceId}</span>
             </p>
             <p className="text-xs text-cyan-300 font-medium">
-              Hora límite en aula asignada: <span className="font-bold text-white">{horarioAulaAsignado}</span>
+              Clase / Horario asignado: <span className="font-bold text-white">{aulaAsignada}</span>{" "}
+              {horarioAulaAsignado !== "Pendiente de horario" ? `(${horarioAulaAsignado})` : ""}
             </p>
             {mensajeRegistro && (
               <p className={`text-xs font-semibold pt-1 ${mensajeRegistro.tipo === "ok" ? "text-emerald-400" : "text-rose-400"}`}>
@@ -698,71 +786,153 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
           </button>
         </div>
 
-        {/* TABLA DE REGISTRO DE ASISTENCIA: NOMBRE -> FECHA -> HORA -> AULA -> ESTATUS */}
-        <div className="p-6 md:p-8 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
-          <div className="flex items-center justify-between border-b border-white/10 pb-4">
-            <div>
-              <h3 className="text-base md:text-lg font-extrabold text-white">
-                Registro de Asistencias del Docente
-              </h3>
-              <p className="text-xs text-neutral-400 mt-0.5">
-                Marcaciones registradas automáticamente al detectar el campus y red institucional.
-              </p>
+        {/* CONTENEDOR HORIZONTAL: IZQUIERDA (REGISTRO DE ASISTENCIAS) + DERECHA (CALENDARIO ESCOLAR) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* CUADRO IZQUIERDO: REGISTRO DE ASISTENCIAS DEL DOCENTE */}
+          <div className="lg:col-span-6 p-6 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4 gap-2">
+              <div>
+                <h3 className="text-base md:text-lg font-extrabold text-white">
+                  Registro de Asistencias del Docente
+                </h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Marcaciones registradas automáticamente al detectar el campus y red institucional.
+                </p>
+              </div>
+              <button
+                onClick={() => cargarHistorialReal(emailActivo)}
+                disabled={cargandoHistorial}
+                className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl transition cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                {cargandoHistorial ? "..." : "Actualizar"}
+              </button>
             </div>
-            <button
-              onClick={() => cargarHistorialReal(emailActivo)}
-              disabled={cargandoHistorial}
-              className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl transition cursor-pointer disabled:opacity-50"
-            >
-              {cargandoHistorial ? "Actualizando..." : "Actualizar"}
-            </button>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-white/10 text-neutral-400 uppercase tracking-wider text-[11px]">
+                    <th className="py-3 px-3">Fecha</th>
+                    <th className="py-3 px-3">Hora</th>
+                    <th className="py-3 px-3">Aula / Materia</th>
+                    <th className="py-3 px-3">Estatus</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10 text-neutral-200">
+                  {historialAsistencias.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-neutral-400">
+                        {cargandoHistorial
+                          ? "Consultando registros de asistencia..."
+                          : "Sin registros visibles. Al ingresar al campus TUP o presionar 'Registrar Asistencia' aparecerá aquí."}
+                      </td>
+                    </tr>
+                  ) : (
+                    historialAsistencias.map((reg) => {
+                      const { fecha, hora } = formatearFechaHora12H(reg.fecha_hora);
+                      return (
+                        <tr key={reg.id} className="hover:bg-white/5 transition">
+                          <td className="py-3 px-3 font-mono text-neutral-300 whitespace-nowrap">{fecha}</td>
+                          <td className="py-3 px-3 font-mono text-amber-300 font-bold whitespace-nowrap">{hora}</td>
+                          <td className="py-3 px-3 text-neutral-300">{obtenerTextoAula(reg.aula)}</td>
+                          <td className="py-3 px-3">
+                            <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              {reg.estado}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-white/10 text-neutral-400 uppercase tracking-wider text-[11px]">
-                  <th className="py-3 px-4">Nombre del Docente</th>
-                  <th className="py-3 px-4">Fecha</th>
-                  <th className="py-3 px-4">Hora</th>
-                  <th className="py-3 px-4">Aula</th>
-                  <th className="py-3 px-4">Estatus</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10 text-neutral-200">
-                {historialAsistencias.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="py-8 text-center text-neutral-400">
-                      {cargandoHistorial
-                        ? "Consultando registros de asistencia..."
-                        : "Sin registros visibles. Al ingresar al campus TUP o presionar 'Registrar Asistencia' aparecerá aquí."}
-                    </td>
-                  </tr>
-                ) : (
-                  historialAsistencias.map((reg) => {
-                    const { fecha, hora } = formatearFechaHora12H(reg.fecha_hora);
-                    return (
-                      <tr key={reg.id} className="hover:bg-white/5 transition">
-                        <td className="py-3.5 px-4 font-semibold text-white">{reg.usuario || nombreDocente}</td>
-                        <td className="py-3.5 px-4 font-mono text-neutral-300">{fecha}</td>
-                        <td className="py-3.5 px-4 font-mono text-amber-300 font-bold">{hora}</td>
-                        <td className="py-3.5 px-4 text-neutral-300">{obtenerTextoAula(reg.aula)}</td>
-                        <td className="py-3.5 px-4">
-                          <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                            {reg.estado}
+          {/* CUADRO DERECHO: CALENDARIO ESCOLAR FORMAL */}
+          <div className="lg:col-span-6 p-6 rounded-3xl border border-white/10 bg-neutral-900/60 backdrop-blur-xl shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4 gap-2">
+              <div>
+                <h3 className="text-base md:text-lg font-extrabold text-white">
+                  Calendario Escolar Semanal
+                </h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Materias, horarios y aulas asignadas por Administración Académica.
+                </p>
+              </div>
+              <button
+                onClick={cargarMisClases}
+                disabled={cargandoClases}
+                className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl transition cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                {cargandoClases ? "..." : "Actualizar"}
+              </button>
+            </div>
+
+            {misClases.length === 0 ? (
+              <div className="p-8 rounded-2xl border border-dashed border-white/15 bg-black/30 text-center space-y-1.5">
+                <p className="text-sm font-bold text-neutral-200">Sin materias asignadas todavía</p>
+                <p className="text-xs text-neutral-400">
+                  Cuando Administración cargue tus materias, aulas y horarios aparecerán organizados aquí por día de la semana.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {DIAS_ESCOLARES.map((dia) => {
+                  const clasesDia = misClases.filter(
+                    (c) => (c.dia_semana || "").toLowerCase() === dia.toLowerCase()
+                  );
+                  const esHoy = dia.toLowerCase() === diaActualSemana.toLowerCase();
+                  return (
+                    <div
+                      key={dia}
+                      className={`rounded-2xl border p-3.5 transition ${
+                        esHoy
+                          ? "border-[#7A1C2E] bg-[#7A1C2E]/15"
+                          : "border-white/10 bg-black/40"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-2.5">
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-white">
+                          {dia}
+                        </span>
+                        {esHoy && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#7A1C2E] text-white">
+                            HOY
                           </span>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                        )}
+                      </div>
+
+                      {clasesDia.length === 0 ? (
+                        <p className="text-[11px] text-neutral-500 py-2">Sin clases programadas</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {clasesDia.map((clase) => (
+                            <div
+                              key={clase.id}
+                              className="p-2.5 rounded-xl bg-neutral-900/90 border border-white/10 space-y-1"
+                            >
+                              <p className="text-xs font-bold text-white leading-snug">{clase.materia}</p>
+                              <div className="flex items-center justify-between text-[11px] text-neutral-300">
+                                <span className="font-mono text-amber-300">{clase.horario}</span>
+                                <span className="px-2 py-0.5 rounded bg-white/10 text-cyan-300 font-semibold">
+                                  {clase.aula}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </section>
 
-      {/* MODAL CLASE EN LÍNEA (EN DESARROLLO) */}
+      {/* MODAL CLASE EN LÍNEA */}
       {vistaModalActiva === "clase_linea" && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="max-w-md w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
@@ -792,10 +962,10 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       )}
 
-      {/* MODAL INCIDENCIAS */}
+      {/* MODAL INCIDENCIAS + RESPUESTAS DE ADMINISTRACIÓN */}
       {vistaModalActiva === "incidencias" && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="max-w-2xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 md:p-8 space-y-5 text-white shadow-2xl my-8">
+          <div className="max-w-2xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 md:p-8 space-y-5 text-white shadow-2xl my-8 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-4">
               <div>
                 <h3 className="text-lg font-extrabold text-white">
@@ -851,7 +1021,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                   3. ¿Qué está sucediendo? (Pregunta Abierta) *
                 </label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   placeholder="Describe a detalle lo que sucede en el aula o el motivo de tu solicitud..."
                   value={preguntaAbierta}
                   onChange={(e) => setPreguntaAbierta(e.target.value)}
@@ -880,7 +1050,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
                   </span>
                 ) : (
                   <span className="text-[11px] text-neutral-400">
-                    Folio generado automáticamente
+                    Se notifica en la campana de Administración
                   </span>
                 )}
 
@@ -903,6 +1073,41 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
             </form>
 
+            {misIncidencias.length > 0 && (
+              <div className="pt-4 border-t border-white/10 space-y-2.5">
+                <p className="text-xs font-bold uppercase tracking-wider text-neutral-300">
+                  Historial de mis solicitudes y respuestas
+                </p>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {misIncidencias.map((inc) => (
+                    <div key={inc.id} className="p-3 rounded-xl bg-black/50 border border-white/10 text-xs space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white">{inc.motivo}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            inc.estado === "RESUELTA"
+                              ? "bg-emerald-500/20 text-emerald-300"
+                              : "bg-amber-500/20 text-amber-300"
+                          }`}
+                        >
+                          {inc.estado}
+                        </span>
+                      </div>
+                      <p className="text-neutral-300">{inc.descripcion}</p>
+                      {inc.respuesta_admin && (
+                        <div className="p-2.5 rounded-lg bg-emerald-950/50 border border-emerald-500/30 text-emerald-200">
+                          <span className="font-bold block text-[11px]">
+                            Respuesta de Administración ({inc.fecha_respuesta}):
+                          </span>
+                          <span>{inc.respuesta_admin}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-neutral-300">
                 En caso de urgencia oprimir{" "}
@@ -919,7 +1124,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
         </div>
       )}
 
-      {/* MODAL HISTORIAL CON BOTÓN PARA RESTABLECER VISTA DOCENTE */}
+      {/* MODAL HISTORIAL */}
       {vistaModalActiva === "historial" && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="max-w-xl w-full rounded-3xl border border-white/15 bg-neutral-900/95 p-6 space-y-4 text-white shadow-2xl">
@@ -1017,7 +1222,7 @@ export default function DocenteDashboard({ session }: DocenteDashboardProps) {
               </div>
 
               <div className="p-3 rounded-xl bg-black/50 border border-white/10 flex justify-between items-center">
-                <span className="text-neutral-400">Aula Asignada:</span>
+                <span className="text-neutral-400">Aula / Materia Asignada:</span>
                 <span className="font-bold text-neutral-300">{aulaAsignada}</span>
               </div>
 

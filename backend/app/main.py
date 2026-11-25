@@ -5,6 +5,8 @@ import json
 import time
 import base64
 import hashlib
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -76,15 +78,49 @@ def _get_admin_email() -> str:
 
 
 # ---------------------------------------------------------------------------
-# IP real del cliente (sin confiar en cabeceras que el cliente pueda escribir)
+# Envío de correos vía API HTTP de Brevo (compatible con Render Free)
+# ---------------------------------------------------------------------------
+def _enviar_correo_brevo(destinatario_email: str, destinatario_nombre: str, asunto: str, html_contenido: str) -> bool:
+    """
+    Envía correo transaccional usando la API HTTP de Brevo (https://api.brevo.com/v3/smtp/email).
+    Si BREVO_API_KEY no está configurada, omite el envío sin romper el flujo.
+    """
+    api_key = os.getenv("BREVO_API_KEY", "").strip()
+    remitente_email = os.getenv("BREVO_SENDER_EMAIL", "").strip()
+    remitente_nombre = os.getenv("BREVO_SENDER_NAME", "Control de Asistencia TUP").strip()
+
+    if not api_key or not remitente_email or not destinatario_email:
+        return False
+
+    payload = {
+        "sender": {"name": remitente_nombre, "email": remitente_email},
+        "to": [{"email": destinatario_email, "name": destinatario_nombre or destinatario_email}],
+        "subject": asunto,
+        "htmlContent": html_contenido,
+    }
+
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "api-key": api_key,
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        print(f"[BREVO] Error al enviar correo a {destinatario_email}: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# IP real del cliente
 # ---------------------------------------------------------------------------
 def _obtener_origen_cliente(request: Request) -> str:
-    """
-    Cada proxy AGREGA la IP que vio al FINAL de X-Forwarded-For, así que se lee desde
-    la derecha saltando solo los proxies de confianza (TRUSTED_PROXY_HOPS, por defecto 1).
-    Si la plataforma garantiza una cabecera propia (CLIENT_IP_HEADER=cf-connecting-ip),
-    se usa esa. Si no se puede determinar con certeza, devuelve "" (falla cerrada).
-    """
     header_confiable = os.getenv("CLIENT_IP_HEADER", "").strip().lower()
     if header_confiable:
         valor = request.headers.get(header_confiable, "")
@@ -105,7 +141,7 @@ def _obtener_origen_cliente(request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tokens firmados con HMAC (sin dependencias extra)
+# Tokens firmados con HMAC
 # ---------------------------------------------------------------------------
 ADMIN_TOKEN_TTL_SEGUNDOS = 8 * 3600
 
@@ -161,7 +197,6 @@ def require_admin(request: Request):
 
 
 def usuario_autenticado(request: Request) -> dict:
-    """Identidad verificada del docente. El email sale del token firmado, nunca del body."""
     token = _token_bearer(request)
     secreto = _secreto("BACKEND_AUTH_SECRET", 32)
     try:
@@ -238,10 +273,6 @@ PRESENCIA_VIGENCIA_SEGUNDOS = 180
 
 
 def _registrar_presencia(db: Session, usuario, info: dict, datos) -> None:
-    """
-    Guarda SOLO la última presencia del usuario (se sobrescribe; no se conserva historial).
-    Privacidad: las coordenadas se guardan únicamente si la red del campus fue verificada por IP.
-    """
     valida = bool(info.get("valida"))
     usuario.ultima_conexion = _ahora_cancun()
     usuario.ultima_valida = valida
@@ -263,7 +294,6 @@ _FOTO_RE = re.compile(r"data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})
 
 
 def _validar_foto(data_url: str) -> str:
-    """Devuelve la foto validada o lanza HTTPException. Comprueba tipo declarado, base64, tamaño y firma real."""
     m = _FOTO_RE.fullmatch(data_url or "")
     if not m:
         raise HTTPException(status_code=400, detail="Formato de imagen no válido. Usa JPEG, PNG o WebP.")
@@ -282,6 +312,32 @@ def _validar_foto(data_url: str) -> str:
     if not firmas[tipo]:
         raise HTTPException(status_code=400, detail="El contenido no coincide con el tipo de imagen.")
     return data_url
+
+
+_DIAS_MAP = {
+    0: "Lunes",
+    1: "Martes",
+    2: "Miércoles",
+    3: "Jueves",
+    4: "Viernes",
+    5: "Sábado",
+    6: "Domingo",
+}
+
+
+def _obtener_aula_horario_actual(db: Session, usuario_id: int) -> tuple[Optional[str], Optional[str]]:
+    clases = (
+        db.query(models.ClaseAsignada)
+        .filter(models.ClaseAsignada.usuario_id == usuario_id)
+        .order_by(models.ClaseAsignada.id.asc())
+        .all()
+    )
+    if not clases:
+        return None, None
+    dia_hoy = _DIAS_MAP.get(_ahora_cancun().weekday(), "Lunes")
+    clase_hoy = next((c for c in clases if (c.dia_semana or "").lower() == dia_hoy.lower()), None)
+    elegida = clase_hoy or clases[0]
+    return f"{elegida.aula} — {elegida.materia}", f"{elegida.dia_semana} {elegida.horario}"
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +396,28 @@ class LimpiarHistorialDocenteRequest(BaseModel):
     email: Optional[str] = None
 
 
+class IncidenciaCreate(BaseModel):
+    email: Optional[str] = None
+    motivo: str
+    fecha_evento: Optional[str] = ""
+    descripcion: str
+    observaciones: Optional[str] = ""
+    urgente: Optional[bool] = False
+
+
+class IncidenciaRespuestaAdmin(BaseModel):
+    respuesta: str
+    marcar_resuelta: bool = True
+
+
+class ClaseAsignadaCreate(BaseModel):
+    usuario_id: int
+    materia: str
+    aula: str
+    dia_semana: str = "Lunes"
+    horario: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints públicos / de sesión
 # ---------------------------------------------------------------------------
@@ -365,7 +443,6 @@ def admin_login(datos: AdminLoginRequest):
 
 @app.post("/api/auth/login-empleado")
 def login_empleado(datos: LoginEmpleadoRequest, db: Session = Depends(get_db)):
-    """Lo llama el servidor de NextAuth. Valida número de empleado + contraseña contra la BD."""
     numero = datos.numero_empleado.strip().upper()
     if len(_intentos_recientes(numero)) >= _MAX_FALLOS:
         raise HTTPException(status_code=429, detail="Demasiados intentos. Espera unos minutos.")
@@ -430,6 +507,7 @@ def obtener_perfil(
             db.commit()
 
     token_red = network_manager.generar_token_dispositivo(usuario.mac_address)
+    aula_asig, horario_asig = _obtener_aula_horario_actual(db, usuario.id)
 
     return {
         "id": usuario.id,
@@ -439,8 +517,8 @@ def obtener_perfil(
         "mac_address": usuario.mac_address,
         "token_red": token_red,
         "foto": usuario.foto,
-        "aula_asignada": None,
-        "horario_asignado": None,
+        "aula_asignada": aula_asig,
+        "horario_asignado": horario_asig,
     }
 
 
@@ -514,6 +592,7 @@ def auto_marcar_asistencia(
     )
 
     _registrar_presencia(db, usuario, red_activa_info, datos)
+    aula_asig, horario_asig = _obtener_aula_horario_actual(db, usuario.id)
 
     if not red_activa_info["valida"]:
         return {
@@ -522,6 +601,8 @@ def auto_marcar_asistencia(
             "red_activa": False,
             "ssid_actual": red_activa_info.get("ssid", "Fuera de Campus"),
             "distancia_metros": red_activa_info.get("distancia_metros"),
+            "aula_asignada": aula_asig,
+            "horario_asignado": horario_asig,
         }
 
     ssid_final = red_activa_info["ssid"]
@@ -551,7 +632,7 @@ def auto_marcar_asistencia(
             usuario_id=usuario.id,
             fecha_hora=ahora,
             ip_origen=dispositivo_id,
-            metodo=zona_final,
+            metodo=aula_asig or zona_final,
             estado="PRESENTE",
         )
         db.add(nueva_asistencia)
@@ -567,6 +648,8 @@ def auto_marcar_asistencia(
             "zona": zona_final,
             "token_red": token_red,
             "distancia_metros": distancia_metros,
+            "aula_asignada": aula_asig,
+            "horario_asignado": horario_asig,
         }
 
     return {
@@ -577,6 +660,8 @@ def auto_marcar_asistencia(
         "zona": zona_final,
         "token_red": token_red,
         "distancia_metros": distancia_metros,
+        "aula_asignada": aula_asig,
+        "horario_asignado": horario_asig,
     }
 
 
@@ -586,7 +671,6 @@ def actualizar_foto(
     ident: dict = Depends(usuario_autenticado),
     db: Session = Depends(get_db),
 ):
-    """Guarda la foto de perfil del usuario del token (nunca la de otro)."""
     usuario = _buscar_usuario_por_email(db, ident["email"])
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -618,6 +702,7 @@ def obtener_historial(
     if not usuario:
         return []
 
+    aula_actual, horario_actual = _obtener_aula_horario_actual(db, usuario.id)
     query = db.query(models.Asistencia).filter(models.Asistencia.usuario_id == usuario.id)
 
     if desde:
@@ -635,7 +720,10 @@ def obtener_historial(
             tag in metodo_raw.upper()
             for tag in ("DETECCION", "TOKEN", "RED_", "PERIMETRO", "CAMPUS PRINCIPAL")
         )
-        aula_texto = "Sin aula asignada por Administración" if (not metodo_raw or es_tecnico) else metodo_raw
+        if not metodo_raw or es_tecnico:
+            aula_texto = f"{aula_actual} ({horario_actual})" if aula_actual else "Sin aula asignada por Administración"
+        else:
+            aula_texto = metodo_raw
         resultado.append({
             "id": a.id,
             "usuario": usuario.nombre,
@@ -659,11 +747,126 @@ def limpiar_vista_historial_docente(
 
 
 # ---------------------------------------------------------------------------
+# Incidencias y Materias/Horarios (Docente)
+# ---------------------------------------------------------------------------
+@app.post("/api/incidencias/crear")
+def crear_incidencia_docente(
+    datos: IncidenciaCreate,
+    ident: dict = Depends(usuario_autenticado),
+    db: Session = Depends(get_db),
+):
+    usuario = _buscar_usuario_por_email(db, ident["email"])
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Docente no encontrado.")
+
+    motivo = datos.motivo.strip()
+    descripcion = datos.descripcion.strip()
+    if not motivo or not descripcion:
+        raise HTTPException(status_code=400, detail="El motivo y la descripción son obligatorios.")
+
+    ahora = _ahora_cancun()
+    nueva = models.Incidencia(
+        usuario_id=usuario.id,
+        motivo=motivo,
+        fecha_evento=(datos.fecha_evento or "").strip() or None,
+        descripcion=descripcion,
+        observaciones=(datos.observaciones or "").strip() or None,
+        urgente=bool(datos.urgente),
+        leida=False,
+        estado="PENDIENTE",
+        fecha_creacion=ahora,
+    )
+    db.add(nueva)
+    db.commit()
+    db.refresh(nueva)
+
+    admin_notif_email = os.getenv("ADMIN_NOTIFICATION_EMAIL", "").strip()
+    if admin_notif_email:
+        etiqueta_urg = "[URGENCIA] " if nueva.urgente else ""
+        _enviar_correo_brevo(
+            destinatario_email=admin_notif_email,
+            destinatario_nombre="Administración TUP",
+            asunto=f"{etiqueta_urg}Nueva incidencia de {usuario.nombre} — TUP",
+            html_contenido=f"""
+            <div style="font-family:sans-serif;max-width:560px;margin:auto;border:1px solid #e2e8f0;border-radius:12px;padding:24px;">
+              <h2 style="color:#7A1C2E;margin-top:0;">Nueva Incidencia Docente</h2>
+              <p><strong>Docente:</strong> {usuario.nombre} ({usuario.email})</p>
+              <p><strong>Motivo:</strong> {nueva.motivo}</p>
+              <p><strong>Fecha del evento:</strong> {nueva.fecha_evento or 'No especificada'}</p>
+              <p><strong>Descripción:</strong><br>{nueva.descripcion}</p>
+              {f'<p><strong>Observaciones:</strong> {nueva.observaciones}</p>' if nueva.observaciones else ''}
+              <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">
+              <p style="font-size:12px;color:#64748b;">Puedes responder directamente desde la campana de notificaciones en el Panel de Administración TUP.</p>
+            </div>
+            """,
+        )
+
+    return {"status": "success", "id": nueva.id, "mensaje": "Incidencia enviada a Administración."}
+
+
+@app.get("/api/incidencias/mis-incidencias")
+def listar_mis_incidencias(
+    ident: dict = Depends(usuario_autenticado),
+    db: Session = Depends(get_db),
+):
+    usuario = _buscar_usuario_por_email(db, ident["email"])
+    if not usuario:
+        return []
+    lista = (
+        db.query(models.Incidencia)
+        .filter(models.Incidencia.usuario_id == usuario.id)
+        .order_by(models.Incidencia.fecha_creacion.desc())
+        .limit(20)
+        .all()
+    )
+    return [
+        {
+            "id": i.id,
+            "motivo": i.motivo,
+            "fecha_evento": i.fecha_evento,
+            "descripcion": i.descripcion,
+            "observaciones": i.observaciones,
+            "urgente": i.urgente,
+            "estado": i.estado,
+            "respuesta_admin": i.respuesta_admin,
+            "fecha_creacion": i.fecha_creacion.strftime("%Y-%m-%d %H:%M"),
+            "fecha_respuesta": i.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if i.fecha_respuesta else None,
+        }
+        for i in lista
+    ]
+
+
+@app.get("/api/clases/mis-clases")
+def listar_mis_clases(
+    ident: dict = Depends(usuario_autenticado),
+    db: Session = Depends(get_db),
+):
+    usuario = _buscar_usuario_por_email(db, ident["email"])
+    if not usuario:
+        return []
+    clases = (
+        db.query(models.ClaseAsignada)
+        .filter(models.ClaseAsignada.usuario_id == usuario.id)
+        .order_by(models.ClaseAsignada.id.asc())
+        .all()
+    )
+    return [
+        {
+            "id": c.id,
+            "materia": c.materia,
+            "aula": c.aula,
+            "dia_semana": c.dia_semana,
+            "horario": c.horario,
+        }
+        for c in clases
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Administración (todo exige token de administrador)
 # ---------------------------------------------------------------------------
 @app.get("/api/admin/mi-ip", dependencies=[Depends(require_admin)])
 def diagnostico_ip(request: Request):
-    """Para verificar en producción qué IP lee el servidor y de qué cabeceras viene."""
     return {
         "ip_detectada": _obtener_origen_cliente(request),
         "client_host_directo": request.client.host if request.client else None,
@@ -678,12 +881,12 @@ def diagnostico_ip(request: Request):
 
 @app.get("/api/admin/estado-sistema", dependencies=[Depends(require_admin)])
 def estado_sistema(db: Session = Depends(get_db)):
-    """Diagnóstico: qué base de datos se usa y si los datos podrían perderse al reiniciar."""
     dialecto = engine.dialect.name
     volatil = dialecto == "sqlite" and not os.getenv("SQLITE_PATH")
     return {
         "base_de_datos": dialecto,
         "posiblemente_temporal": volatil,
+        "correo_brevo_configurado": bool(os.getenv("BREVO_API_KEY") and os.getenv("BREVO_SENDER_EMAIL")),
         "advertencia": (
             "La base de datos es un archivo SQLite local. En un servicio sin disco persistente "
             "se pierde al reiniciar o redesplegar (docentes, fotos y asistencias)."
@@ -696,10 +899,6 @@ def estado_sistema(db: Session = Depends(get_db)):
 
 @app.get("/api/admin/docentes", dependencies=[Depends(require_admin)])
 def listar_docentes(db: Session = Depends(get_db)):
-    """
-    Lista de usuarios con su estado de presencia. La ubicación solo aparece mientras el docente
-    está verificado dentro de la red del campus y su última verificación es reciente.
-    """
     ahora = _ahora_cancun()
     inicio_dia = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
     primeras = dict(
@@ -792,9 +991,182 @@ def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="No se puede eliminar la cuenta de administrador.")
 
     db.query(models.Asistencia).filter(models.Asistencia.usuario_id == docente.id).delete()
+    db.query(models.Incidencia).filter(models.Incidencia.usuario_id == docente.id).delete()
+    db.query(models.ClaseAsignada).filter(models.ClaseAsignada.usuario_id == docente.id).delete()
     db.delete(docente)
     db.commit()
     return {"status": "success", "mensaje": f"Docente '{docente.nombre}' eliminado."}
+
+
+# --- Gestión de Incidencias (Campana Admin) ---
+@app.get("/api/admin/incidencias", dependencies=[Depends(require_admin)])
+def listar_incidencias_admin(db: Session = Depends(get_db)):
+    incidencias = (
+        db.query(models.Incidencia)
+        .order_by(models.Incidencia.leida.asc(), models.Incidencia.fecha_creacion.desc())
+        .all()
+    )
+    resultado = []
+    for inc in incidencias:
+        usr = db.query(models.Usuario).filter(models.Usuario.id == inc.usuario_id).first()
+        resultado.append({
+            "id": inc.id,
+            "docente_nombre": usr.nombre if usr else "Docente",
+            "docente_email": usr.email if usr else "",
+            "docente_foto": usr.foto if usr else None,
+            "motivo": inc.motivo,
+            "fecha_evento": inc.fecha_evento,
+            "descripcion": inc.descripcion,
+            "observaciones": inc.observaciones,
+            "urgente": inc.urgente,
+            "leida": inc.leida,
+            "estado": inc.estado,
+            "respuesta_admin": inc.respuesta_admin,
+            "fecha_creacion": inc.fecha_creacion.strftime("%Y-%m-%d %H:%M"),
+            "fecha_respuesta": inc.fecha_respuesta.strftime("%Y-%m-%d %H:%M") if inc.fecha_respuesta else None,
+        })
+    return resultado
+
+
+@app.post("/api/admin/incidencias/{incidencia_id}/leida", dependencies=[Depends(require_admin)])
+def marcar_incidencia_leida(incidencia_id: int, db: Session = Depends(get_db)):
+    inc = db.query(models.Incidencia).filter(models.Incidencia.id == incidencia_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada.")
+    inc.leida = True
+    if inc.estado == "PENDIENTE":
+        inc.estado = "RESUELTA"
+    db.commit()
+    return {"status": "success"}
+
+
+@app.post("/api/admin/incidencias/{incidencia_id}/responder", dependencies=[Depends(require_admin)])
+def responder_incidencia_admin(
+    incidencia_id: int,
+    datos: IncidenciaRespuestaAdmin,
+    db: Session = Depends(get_db),
+):
+    inc = db.query(models.Incidencia).filter(models.Incidencia.id == incidencia_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incidencia no encontrada.")
+
+    respuesta_limpia = datos.respuesta.strip()
+    if not respuesta_limpia:
+        raise HTTPException(status_code=400, detail="Escribe una respuesta antes de enviar.")
+
+    inc.respuesta_admin = respuesta_limpia
+    inc.leida = True
+    inc.estado = "RESUELTA" if datos.marcar_resuelta else "RESPONDIDA"
+    inc.fecha_respuesta = _ahora_cancun()
+    db.commit()
+
+    usr = db.query(models.Usuario).filter(models.Usuario.id == inc.usuario_id).first()
+    correo_enviado = False
+    if usr and usr.email:
+        correo_enviado = _enviar_correo_brevo(
+            destinatario_email=usr.email,
+            destinatario_nombre=usr.nombre,
+            asunto=f"Respuesta a tu solicitud ({inc.motivo}) — Tecnológico Universitario Playacar",
+            html_contenido=f"""
+            <div style="font-family:sans-serif;max-width:560px;margin:auto;border:1px solid #e2e8f0;border-radius:12px;padding:24px;">
+              <h2 style="color:#7A1C2E;margin-top:0;">Respuesta de Administración TUP</h2>
+              <p>Hola <strong>{usr.nombre}</strong>,</p>
+              <p>Administración ha respondido a tu reporte sobre <strong>{inc.motivo}</strong>:</p>
+              <div style="background:#f8fafc;border-left:4px solid #7A1C2E;padding:14px;border-radius:6px;margin:16px 0;">
+                <p style="margin:0;color:#0f172a;white-space:pre-line;">{respuesta_limpia}</p>
+              </div>
+              <p style="font-size:12px;color:#64748b;">Estado actual: <strong>{inc.estado}</strong>. También puedes consultar esta respuesta en tu Portal Docente.</p>
+            </div>
+            """,
+        )
+
+    return {
+        "status": "success",
+        "correo_enviado": correo_enviado,
+        "mensaje": (
+            "Respuesta guardada y enviada al correo del docente."
+            if correo_enviado
+            else "Respuesta guardada en el portal del docente."
+        ),
+    }
+
+
+# --- Gestión de Materias / Horarios (Admin) ---
+@app.get("/api/admin/materias", dependencies=[Depends(require_admin)])
+def listar_materias_admin(db: Session = Depends(get_db)):
+    clases = db.query(models.ClaseAsignada).order_by(models.ClaseAsignada.id.desc()).all()
+    resultado = []
+    for c in clases:
+        usr = db.query(models.Usuario).filter(models.Usuario.id == c.usuario_id).first()
+        resultado.append({
+            "id": c.id,
+            "usuario_id": c.usuario_id,
+            "docente_nombre": usr.nombre if usr else "Desconocido",
+            "docente_email": usr.email if usr else "",
+            "materia": c.materia,
+            "aula": c.aula,
+            "dia_semana": c.dia_semana,
+            "horario": c.horario,
+        })
+    return resultado
+
+
+@app.post("/api/admin/materias", dependencies=[Depends(require_admin)])
+def asignar_materia_admin(datos: ClaseAsignadaCreate, db: Session = Depends(get_db)):
+    docente = db.query(models.Usuario).filter(models.Usuario.id == datos.usuario_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado.")
+
+    materia = datos.materia.strip()
+    aula = datos.aula.strip()
+    horario = datos.horario.strip()
+    dia_semana = datos.dia_semana.strip() or "Lunes"
+    if not materia or not aula or not horario:
+        raise HTTPException(status_code=400, detail="Docente, materia, aula y horario son obligatorios.")
+
+    nueva = models.ClaseAsignada(
+        usuario_id=docente.id,
+        materia=materia,
+        aula=aula,
+        dia_semana=dia_semana,
+        horario=horario,
+        fecha_creacion=_ahora_cancun(),
+    )
+    db.add(nueva)
+    db.commit()
+    db.refresh(nueva)
+
+    if docente.email:
+        _enviar_correo_brevo(
+            destinatario_email=docente.email,
+            destinatario_nombre=docente.nombre,
+            asunto=f"Nueva materia asignada: {materia} — TUP",
+            html_contenido=f"""
+            <div style="font-family:sans-serif;max-width:560px;margin:auto;border:1px solid #e2e8f0;border-radius:12px;padding:24px;">
+              <h2 style="color:#7A1C2E;margin-top:0;">Asignación de Carga Académica</h2>
+              <p>Hola <strong>{docente.nombre}</strong>, se te ha asignado una nueva clase en tu horario escolar:</p>
+              <ul style="line-height:1.8;">
+                <li><strong>Materia:</strong> {materia}</li>
+                <li><strong>Día:</strong> {dia_semana}</li>
+                <li><strong>Horario:</strong> {horario}</li>
+                <li><strong>Aula:</strong> {aula}</li>
+              </ul>
+              <p style="font-size:12px;color:#64748b;">Ya puedes visualizarla en el calendario de tu Portal de Asistencia Docente.</p>
+            </div>
+            """,
+        )
+
+    return {"status": "success", "id": nueva.id, "mensaje": f"Materia '{materia}' asignada a {docente.nombre}."}
+
+
+@app.delete("/api/admin/materias/{clase_id}", dependencies=[Depends(require_admin)])
+def eliminar_materia_admin(clase_id: int, db: Session = Depends(get_db)):
+    clase = db.query(models.ClaseAsignada).filter(models.ClaseAsignada.id == clase_id).first()
+    if not clase:
+        raise HTTPException(status_code=404, detail="Asignación no encontrada.")
+    db.delete(clase)
+    db.commit()
+    return {"status": "success", "mensaje": "Materia eliminada del horario."}
 
 
 @app.get("/api/admin/asistencias", dependencies=[Depends(require_admin)])

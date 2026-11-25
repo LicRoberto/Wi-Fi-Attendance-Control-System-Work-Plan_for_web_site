@@ -44,13 +44,50 @@ interface DocenteInfo {
   } | null;
 }
 
+interface IncidenciaAdmin {
+  id: number;
+  docente_nombre: string;
+  docente_email: string;
+  docente_foto: string | null;
+  motivo: string;
+  fecha_evento: string | null;
+  descripcion: string;
+  observaciones: string | null;
+  urgente: boolean;
+  leida: boolean;
+  estado: string;
+  respuesta_admin: string | null;
+  fecha_creacion: string;
+  fecha_respuesta: string | null;
+}
+
+interface MateriaAsignada {
+  id: number;
+  usuario_id: number;
+  docente_nombre: string;
+  docente_email: string;
+  materia: string;
+  aula: string;
+  dia_semana: string;
+  horario: string;
+}
+
 interface EstadoSistema {
   base_de_datos: string;
   posiblemente_temporal: boolean;
+  correo_brevo_configurado?: boolean;
   advertencia: string | null;
   usuarios: number;
   asistencias: number;
 }
+
+const ETIQUETAS_MOTIVO: Record<string, string> = {
+  justificacion_falta: "Justificante por Inasistencia / Salud",
+  permiso_oficial: "Permiso Económico / Oficial",
+  falla_tecnica: "Falla Técnica en Aula",
+  problema_wifi: "Problema de Conexión Wi-Fi TUP",
+  urgencia_inmediata: "URGENCIA INMEDIATA EN CAMPUS",
+};
 
 function formatoHora(valor: string | null): string {
   if (!valor) return "";
@@ -81,7 +118,7 @@ interface AdminDashboardProps {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://tup-backend-19dl.onrender.com";
 
 export default function AdminDashboard({ session }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<"bitacora" | "redes" | "docentes" | "reportes">("bitacora");
+  const [activeTab, setActiveTab] = useState<"bitacora" | "redes" | "docentes" | "materias" | "reportes">("bitacora");
   const [docentes, setDocentes] = useState<DocenteInfo[]>([]);
   const [docenteSelId, setDocenteSelId] = useState<number | null>(null);
   const [mostrarPasswordDocente, setMostrarPasswordDocente] = useState(false);
@@ -92,6 +129,24 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("TODOS");
   const [loading, setLoading] = useState(false);
+
+  // Campana e incidencias
+  const [incidencias, setIncidencias] = useState<IncidenciaAdmin[]>([]);
+  const [modalCampanaAbierto, setModalCampanaAbierto] = useState(false);
+  const [campanaImgError, setCampanaImgError] = useState(false);
+  const [respuestasTexto, setRespuestasTexto] = useState<Record<number, string>>({});
+  const [enviandoRespuestaId, setEnviandoRespuestaId] = useState<number | null>(null);
+
+  // Materias y horarios
+  const [materias, setMaterias] = useState<MateriaAsignada[]>([]);
+  const [nuevaMateria, setNuevaMateria] = useState({
+    usuario_id: "",
+    dia_semana: "Lunes",
+    horario: "",
+    aula: "",
+    materia: "",
+  });
+  const [guardandoMateria, setGuardandoMateria] = useState(false);
 
   const [showModalDocente, setShowModalDocente] = useState(false);
   const [nuevoDocente, setNuevoDocente] = useState({ nombre: "", email: "", matricula: "", password: "" });
@@ -156,10 +211,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     setLoading(true);
     try {
       const res = await adminFetch("/api/admin/asistencias");
-      if (res.ok) {
-        const data = await res.json();
-        setRegistros(data);
-      }
+      if (res.ok) setRegistros(await res.json());
     } catch (err) {
       console.error("Error al obtener bitácora general de asistencias", err);
     } finally {
@@ -170,10 +222,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const cargarRedesWifi = async () => {
     try {
       const res = await adminFetch("/api/admin/redes-wifi");
-      if (res.ok) {
-        const data = await res.json();
-        setRedesWifi(data);
-      }
+      if (res.ok) setRedesWifi(await res.json());
     } catch (err) {
       console.error("Error al obtener redes Wi-Fi", err);
     }
@@ -185,6 +234,24 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       if (res.ok) setDocentes(await res.json());
     } catch (err) {
       console.error("Error al obtener docentes", err);
+    }
+  };
+
+  const cargarIncidencias = async () => {
+    try {
+      const res = await adminFetch("/api/admin/incidencias");
+      if (res.ok) setIncidencias(await res.json());
+    } catch (err) {
+      console.error("Error al obtener incidencias", err);
+    }
+  };
+
+  const cargarMaterias = async () => {
+    try {
+      const res = await adminFetch("/api/admin/materias");
+      if (res.ok) setMaterias(await res.json());
+    } catch (err) {
+      console.error("Error al obtener materias", err);
     }
   };
 
@@ -209,13 +276,19 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     cargarTablaAdmin();
     cargarRedesWifi();
     cargarDocentes();
+    cargarIncidencias();
+    cargarMaterias();
     cargarEstadoSistema();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken]);
 
+  // Refresco periódico de campana de notificaciones y docentes
   useEffect(() => {
-    if (!adminToken || activeTab !== "docentes") return;
-    const t = setInterval(cargarDocentes, 15000);
+    if (!adminToken) return;
+    const t = setInterval(() => {
+      cargarIncidencias();
+      if (activeTab === "docentes") cargarDocentes();
+    }, 15000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken, activeTab]);
@@ -223,6 +296,85 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
   const abrirDetalleDocente = (id: number) => {
     setMostrarPasswordDocente(false);
     setDocenteSelId(id);
+  };
+
+  const handleResponderIncidencia = async (incidenciaId: number) => {
+    const texto = (respuestasTexto[incidenciaId] || "").trim();
+    if (!texto) return;
+
+    setEnviandoRespuestaId(incidenciaId);
+    try {
+      const res = await adminFetch(`/api/admin/incidencias/${incidenciaId}/responder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ respuesta: texto, marcar_resuelta: true }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRespuestasTexto((prev) => ({ ...prev, [incidenciaId]: "" }));
+        await cargarIncidencias();
+        alert(data.mensaje || "Respuesta enviada al docente.");
+      }
+    } catch (err) {
+      console.error("Error al responder incidencia", err);
+    } finally {
+      setEnviandoRespuestaId(null);
+    }
+  };
+
+  const handleMarcarLeida = async (incidenciaId: number) => {
+    try {
+      const res = await adminFetch(`/api/admin/incidencias/${incidenciaId}/leida`, {
+        method: "POST",
+      });
+      if (res.ok) await cargarIncidencias();
+    } catch (err) {
+      console.error("Error al marcar como leída", err);
+    }
+  };
+
+  const handleAsignarMateria = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nuevaMateria.usuario_id || !nuevaMateria.materia.trim() || !nuevaMateria.aula.trim() || !nuevaMateria.horario.trim()) {
+      return;
+    }
+    setGuardandoMateria(true);
+    try {
+      const res = await adminFetch("/api/admin/materias", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          usuario_id: Number(nuevaMateria.usuario_id),
+          dia_semana: nuevaMateria.dia_semana,
+          horario: nuevaMateria.horario,
+          aula: nuevaMateria.aula,
+          materia: nuevaMateria.materia,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.mensaje || "Materia asignada correctamente.");
+        setNuevaMateria({ usuario_id: "", dia_semana: "Lunes", horario: "", aula: "", materia: "" });
+        await cargarMaterias();
+      } else {
+        const err = await res.json().catch(() => null);
+        alert(err?.detail || "Error al asignar materia.");
+      }
+    } catch (err) {
+      console.error("Error al asignar materia", err);
+    } finally {
+      setGuardandoMateria(false);
+    }
+  };
+
+  const handleEliminarMateria = async (id: number) => {
+    if (!confirm("¿Eliminar esta materia del horario del docente?")) return;
+    try {
+      const res = await adminFetch(`/api/admin/materias/${id}`, { method: "DELETE" });
+      if (res.ok) await cargarMaterias();
+    } catch (err) {
+      console.error("Error al eliminar materia", err);
+    }
   };
 
   const handleAgregarRed = async (e: React.FormEvent) => {
@@ -300,9 +452,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
       const res = await adminFetch(`/api/admin/redes-wifi/${encodeURIComponent(ssid)}`, {
         method: "DELETE",
       });
-      if (res.ok) {
-        await cargarRedesWifi();
-      }
+      if (res.ok) await cargarRedesWifi();
     } catch (err) {
       console.error("Error al eliminar red Wi-Fi", err);
     }
@@ -334,7 +484,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   const handleEliminarDocente = async (e: React.MouseEvent, id: number, nombre: string) => {
     e.stopPropagation();
-    if (!confirm(`¿Seguro que deseas eliminar al docente "${nombre}" y todo su historial de asistencias?`)) return;
+    if (!confirm(`¿Seguro que deseas eliminar al docente "${nombre}" y todo su historial?`)) return;
     try {
       const res = await adminFetch(`/api/admin/docentes/${id}`, {
         method: "DELETE",
@@ -343,6 +493,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         if (docenteSelId === id) setDocenteSelId(null);
         await cargarDocentes();
         await cargarTablaAdmin();
+        await cargarMaterias();
         await cargarEstadoSistema();
       } else {
         const errData = await res.json().catch(() => null);
@@ -360,6 +511,9 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
     const coincideEstado = filtroEstado === "TODOS" || reg.estado === filtroEstado;
     return coincideTexto && coincideEstado;
   });
+
+  const noLeidasCount = incidencias.filter((i) => !i.leida).length;
+  const docentesSolo = docentes.filter((d) => d.rol !== "admin");
 
   if (!adminToken) {
     return (
@@ -407,7 +561,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
 
   return (
     <main className="min-h-screen bg-[#F8FAFC] text-slate-800 pb-12">
-      <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+      <header className="bg-white border-b border-slate-200 px-6 md:px-8 py-4 flex items-center justify-between shadow-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-[#7A1C2E] text-white flex items-center justify-center font-bold">
             TUP
@@ -417,8 +571,48 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             <p className="text-xs text-slate-500">Panel de Administración General</p>
           </div>
         </div>
+
         <div className="flex items-center gap-4">
-          <div className="text-right">
+          {/* CAMPANA DE NOTIFICACIONES / INCIDENCIAS */}
+          <button
+            type="button"
+            onClick={() => {
+              cargarIncidencias();
+              setModalCampanaAbierto(true);
+            }}
+            title="Notificaciones e Incidencias de Docentes"
+            className="relative p-2 rounded-full border border-slate-200 bg-slate-50 hover:bg-slate-100 transition cursor-pointer"
+          >
+            {!campanaImgError ? (
+              <img
+                src="/campana.png"
+                alt="Notificaciones"
+                onError={() => setCampanaImgError(true)}
+                className="w-6 h-6 object-contain"
+              />
+            ) : (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#7A1C2E"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-6 h-6"
+              >
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            )}
+            {noLeidasCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center shadow">
+                {noLeidasCount}
+              </span>
+            )}
+          </button>
+
+          <div className="text-right hidden sm:block">
             <p className="text-sm font-semibold text-slate-900">{session?.user?.name || "Administrador"}</p>
             <p className="text-xs text-slate-500">{session?.user?.email || "admin@tecplayacar.edu.mx"}</p>
           </div>
@@ -431,7 +625,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
         </div>
       </header>
 
-      <section className="max-w-6xl mx-auto p-8">
+      <section className="max-w-6xl mx-auto p-6 md:p-8">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Redes Institucionales</span>
@@ -486,6 +680,16 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
             Gestión de Docentes
           </button>
           <button
+            onClick={() => setActiveTab("materias")}
+            className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
+              activeTab === "materias"
+                ? "border-b-2 border-[#7A1C2E] text-[#7A1C2E]"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            Agregar materias
+          </button>
+          <button
             onClick={() => setActiveTab("reportes")}
             className={`pb-3 text-sm font-semibold transition whitespace-nowrap cursor-pointer ${
               activeTab === "reportes"
@@ -497,6 +701,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </button>
         </div>
 
+        {/* PESTAÑA BITÁCORA */}
         {activeTab === "bitacora" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -543,7 +748,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                     <th className="py-3 px-4">Correo Institucional</th>
                     <th className="py-3 px-4">Fecha y Hora</th>
                     <th className="py-3 px-4">ID Dispositivo</th>
-                    <th className="py-3 px-4">Red / Método</th>
+                    <th className="py-3 px-4">Aula / Red</th>
                     <th className="py-3 px-4">Estatus</th>
                   </tr>
                 </thead>
@@ -584,6 +789,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* PESTAÑA REDES WI-FI */}
         {activeTab === "redes" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -713,6 +919,7 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* PESTAÑA GESTIÓN DE DOCENTES */}
         {activeTab === "docentes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             {estadoSistema?.posiblemente_temporal && (
@@ -814,6 +1021,154 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* PESTAÑA AGREGAR MATERIAS */}
+        {activeTab === "materias" && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <h3 className="text-lg font-bold text-slate-900 mb-1">Agregar materias</h3>
+              <p className="text-xs text-slate-500 mb-4">
+                Asigna materia, día, horario y aula a un docente. Se reflejará automáticamente en su calendario escolar.
+              </p>
+
+              <form onSubmit={handleAsignarMateria} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Docente *</label>
+                  <select
+                    required
+                    value={nuevaMateria.usuario_id}
+                    onChange={(e) => setNuevaMateria({ ...nuevaMateria, usuario_id: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  >
+                    <option value="">Selecciona un docente...</option>
+                    {docentesSolo.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.nombre} ({doc.numero_empleado || doc.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Materia *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Ingeniería de Software"
+                    value={nuevaMateria.materia}
+                    onChange={(e) => setNuevaMateria({ ...nuevaMateria, materia: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Día de la semana *</label>
+                    <select
+                      value={nuevaMateria.dia_semana}
+                      onChange={(e) => setNuevaMateria({ ...nuevaMateria, dia_semana: e.target.value })}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                    >
+                      <option value="Lunes">Lunes</option>
+                      <option value="Martes">Martes</option>
+                      <option value="Miércoles">Miércoles</option>
+                      <option value="Jueves">Jueves</option>
+                      <option value="Viernes">Viernes</option>
+                      <option value="Sábado">Sábado</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Horario *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. 08:00 - 10:00 AM"
+                      value={nuevaMateria.horario}
+                      onChange={(e) => setNuevaMateria({ ...nuevaMateria, horario: e.target.value })}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Aula *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Aula B-204 / Lab. Cómputo 1"
+                    value={nuevaMateria.aula}
+                    onChange={(e) => setNuevaMateria({ ...nuevaMateria, aula: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={guardandoMateria}
+                  className="w-full py-2.5 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-bold rounded-lg transition cursor-pointer disabled:opacity-50"
+                >
+                  {guardandoMateria ? "Asignando..." : "+ Asignar Materia al Docente"}
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Materias y Horarios Asignados</h3>
+                  <p className="text-xs text-slate-500">Carga académica enviada al portal de cada docente.</p>
+                </div>
+                <button
+                  onClick={cargarMaterias}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+                >
+                  Actualizar
+                </button>
+              </div>
+
+              {materias.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-10">
+                  Aún no hay materias asignadas. Usa el formulario de la izquierda para registrar la primera.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-semibold uppercase tracking-wider">
+                        <th className="py-2.5 px-3">Docente</th>
+                        <th className="py-2.5 px-3">Materia</th>
+                        <th className="py-2.5 px-3">Día y Horario</th>
+                        <th className="py-2.5 px-3">Aula</th>
+                        <th className="py-2.5 px-3 text-right">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {materias.map((m) => (
+                        <tr key={m.id} className="hover:bg-slate-50">
+                          <td className="py-2.5 px-3 font-semibold text-slate-900">{m.docente_nombre}</td>
+                          <td className="py-2.5 px-3 font-medium text-[#7A1C2E]">{m.materia}</td>
+                          <td className="py-2.5 px-3 font-mono">{m.dia_semana} · {m.horario}</td>
+                          <td className="py-2.5 px-3">{m.aula}</td>
+                          <td className="py-2.5 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => handleEliminarMateria(m.id)}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg cursor-pointer"
+                            >
+                              Quitar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* PESTAÑA REPORTES */}
         {activeTab === "reportes" && (
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
             <h3 className="text-lg font-bold text-slate-900 mb-2">Exportar Reportes Institucionales</h3>
@@ -829,6 +1184,150 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
           </div>
         )}
       </section>
+
+      {/* MODAL CAMPANA DE NOTIFICACIONES / INCIDENCIAS */}
+      {modalCampanaAbierto && (
+        <div
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          onClick={() => setModalCampanaAbierto(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl p-6 max-h-[88vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Notificaciones e Incidencias Docentes</h3>
+                <p className="text-xs text-slate-500">
+                  {noLeidasCount > 0
+                    ? `Tienes ${noLeidasCount} notificación(es) pendiente(s) por revisar.`
+                    : "Todas las incidencias han sido revisadas."}
+                  {estadoSistema?.correo_brevo_configurado
+                    ? " · Envío de correo Brevo activo."
+                    : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => setModalCampanaAbierto(false)}
+                className="text-slate-400 hover:text-slate-700 font-bold text-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="overflow-y-auto py-4 space-y-4 flex-1">
+              {incidencias.length === 0 ? (
+                <div className="py-12 text-center text-xs text-slate-400">
+                  No hay incidencias ni notificaciones enviadas por los docentes todavía.
+                </div>
+              ) : (
+                incidencias.map((inc) => (
+                  <div
+                    key={inc.id}
+                    className={`rounded-xl border p-4 space-y-3 ${
+                      inc.urgente
+                        ? "border-rose-300 bg-rose-50/60"
+                        : !inc.leida
+                        ? "border-amber-300 bg-amber-50/40"
+                        : "border-slate-200 bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-700 shrink-0">
+                          {inc.docente_foto ? (
+                            <img src={inc.docente_foto} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            iniciales(inc.docente_nombre)
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-slate-900">{inc.docente_nombre}</span>
+                            {inc.urgente && (
+                              <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-rose-600 text-white">
+                                URGENTE
+                              </span>
+                            )}
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
+                                inc.estado === "RESUELTA"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {inc.estado}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            {inc.docente_email} · Enviado: {inc.fecha_creacion}
+                          </p>
+                        </div>
+                      </div>
+
+                      {!inc.leida && (
+                        <button
+                          type="button"
+                          onClick={() => handleMarcarLeida(inc.id)}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-slate-600 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg cursor-pointer"
+                        >
+                          Marcar leída
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="text-xs space-y-1 bg-white p-3 rounded-lg border border-slate-200/80">
+                      <p className="font-bold text-[#7A1C2E]">
+                        {ETIQUETAS_MOTIVO[inc.motivo] || inc.motivo}
+                        {inc.fecha_evento ? ` · Fecha evento: ${inc.fecha_evento}` : ""}
+                      </p>
+                      <p className="text-slate-800 whitespace-pre-line">{inc.descripcion}</p>
+                      {inc.observaciones && (
+                        <p className="text-slate-500 text-[11px] pt-1">
+                          <strong>Observaciones:</strong> {inc.observaciones}
+                        </p>
+                      )}
+                    </div>
+
+                    {inc.respuesta_admin && (
+                      <div className="text-xs bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                        <p className="text-[11px] font-bold text-emerald-800 mb-0.5">
+                          Respuesta enviada ({inc.fecha_respuesta}):
+                        </p>
+                        <p className="text-emerald-950 whitespace-pre-line">{inc.respuesta_admin}</p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                      <input
+                        type="text"
+                        placeholder={
+                          inc.respuesta_admin
+                            ? "Enviar nueva respuesta o actualización..."
+                            : "Escribe una respuesta para el docente (llega al portal y por correo)..."
+                        }
+                        value={respuestasTexto[inc.id] || ""}
+                        onChange={(e) =>
+                          setRespuestasTexto((prev) => ({ ...prev, [inc.id]: e.target.value }))
+                        }
+                        className="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#7A1C2E]"
+                      />
+                      <button
+                        type="button"
+                        disabled={enviandoRespuestaId === inc.id || !(respuestasTexto[inc.id] || "").trim()}
+                        onClick={() => handleResponderIncidencia(inc.id)}
+                        className="px-4 py-2 bg-[#7A1C2E] hover:bg-[#5c1523] text-white text-xs font-bold rounded-lg transition cursor-pointer disabled:opacity-50"
+                      >
+                        {enviandoRespuestaId === inc.id ? "Enviando..." : "Responder"}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PANEL DE DETALLE DEL DOCENTE */}
       {(() => {
@@ -937,7 +1436,6 @@ export default function AdminDashboard({ session }: AdminDashboardProps) {
                 )}
               </div>
 
-              {/* RECUADRO DE USUARIO / MATRÍCULA Y CONTRASEÑA CON ICONO DE OJITO */}
               <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   Credenciales de Acceso
